@@ -1,5 +1,6 @@
 -- ====================================================================
 -- PROJECT: ANTI-AFK & FPS OPTIMIZER GUI V4.0 (PERMANENT OPTIMIZE)
+-- Đã được sửa lỗi đơ nút và tối ưu cho Executor
 -- ====================================================================
 
 local Players = game:GetService("Players")
@@ -9,20 +10,25 @@ local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
-local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 local function debug_print(msg)
     print("🤖 [System V4.0]: " .. msg)
 end
 
--- 1. Dọn dẹp bản cũ
-local existingGui = PlayerGui:FindFirstChild("AntiAFK_Gui_V4")
+-- ====================================================================
+-- 1. SETUP UI & KHẮC PHỤC LỖI EXECUTOR
+-- ====================================================================
+-- Sử dụng gethui() hoặc CoreGui để game không đè UI lên và không block click
+local TargetParent = pcall(function() return gethui() end) and gethui() or CoreGui
+
+-- Dọn dẹp bản cũ
+local existingGui = TargetParent:FindFirstChild("AntiAFK_Gui_V4")
 if existingGui then existingGui:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "AntiAFK_Gui_V4"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = PlayerGui
+ScreenGui.Parent = TargetParent
 
 -- 2. Khung nền chính (MainFrame)
 local MainFrame = Instance.new("Frame")
@@ -31,7 +37,6 @@ MainFrame.Size = UDim2.new(0, 260, 0, 405)
 MainFrame.Position = UDim2.new(0.05, 0, 0.3, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15) 
 MainFrame.Active = true
-MainFrame.Draggable = true 
 MainFrame.Visible = true
 MainFrame.Parent = ScreenGui
 
@@ -45,7 +50,48 @@ FrameStroke.Color = Color3.fromRGB(139, 92, 246)
 FrameStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 FrameStroke.Parent = MainFrame
 
--- 3. Tiêu đề
+-- Hệ thống Drag (Kéo thả) mượt mà thay thế cho Draggable = true
+local dragging
+local dragInput
+local dragStart
+local startPos
+
+local function update(input)
+    local delta = input.Position - dragStart
+    MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+
+MainFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+MainFrame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        update(input)
+    end
+end)
+
+-- ====================================================================
+-- 3. THIẾT KẾ GIAO DIỆN CHÍNH
+-- ====================================================================
+
+-- Tiêu đề
 local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Name = "TitleLabel"
 TitleLabel.Size = UDim2.new(1, 0, 0, 35) 
@@ -57,9 +103,7 @@ TitleLabel.TextSize = 16
 TitleLabel.Position = UDim2.new(0, 0, 0, 0)
 TitleLabel.Parent = MainFrame
 
--- ====================================================================
--- HÀM TẠO NÚT BẤM
--- ====================================================================
+-- Hàm tạo nút bấm
 local function createButton(name, text, posY, sizeY)
     local btn = Instance.new("TextButton")
     btn.Name = name
@@ -83,7 +127,7 @@ local function createButton(name, text, posY, sizeY)
     return btn
 end
 
--- 4. Tạo các nút chức năng
+-- Tạo các nút chức năng
 local MainButton = createButton("MainButton", "ANTI-AFK: OFF", 45, 45) 
 local OptLightBtn = createButton("OptLightBtn", "⚡ Tối ưu Ánh Sáng", 100)
 local OptWorldBtn = createButton("OptWorldBtn", "🗑️ XÓA TEXTURES: OFF", 145) 
@@ -92,7 +136,7 @@ local OptTerrainBtn = createButton("OptTerrainBtn", "🌊 Tối ưu Địa Hình
 local ZenModeBtn = createButton("ZenModeBtn", "🚀 CHỐNG LAG KHI LOAD LAYOUT", 235)
 ZenModeBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255) 
 
--- 5. Khu vực Keybind & Trạng thái (Đã cập nhật tọa độ thẳng vào đây)
+-- Khu vực Keybind & Trạng thái
 local KeybindButton = createButton("KeybindButton", "⚙️ Phím: [Q]", 295, 30)
 KeybindButton.Size = UDim2.new(0.45, 0, 0, 30)
 KeybindButton.BackgroundColor3 = Color3.fromRGB(139, 92, 246) 
@@ -124,7 +168,7 @@ local function updateStatus(text)
 end
 
 -- ====================================================================
--- LOGIC OPTIMIZER 
+-- 4. LOGIC OPTIMIZER 
 -- ====================================================================
 
 -- ⚡ TỐI ƯU ÁNH SÁNG
@@ -218,7 +262,7 @@ OptWorldBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ====================================================================
--- LOGIC ZEN MODE (CHỐNG FREEZE KHI LOAD LAYOUT)
+-- 5. LOGIC ZEN MODE (CHỐNG FREEZE KHI LOAD LAYOUT)
 -- ====================================================================
 local isZenMode = false
 local blackoutFrame = nil
@@ -264,7 +308,7 @@ ZenModeBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ====================================================================
--- LOGIC ANTI-AFK & KEYBIND
+-- 6. LOGIC ANTI-AFK & KEYBIND
 -- ====================================================================
 local antiAFKEnabled = false 
 local currentKeybind = Enum.KeyCode.Q 
