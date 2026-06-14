@@ -185,11 +185,12 @@ OptTerrainBtn.MouseButton1Click:Connect(function()
     updateStatus("Đang tối ưu địa hình...")
     local terrain = workspace:FindFirstChildOfClass("Terrain")
     if terrain then
-        terrain.WaterWaveSize = 0
-        terrain.WaterWaveSpeed = 0
-        terrain.WaterReflectance = 0
-        terrain.WaterTransparency = 0
-        terrain.Decoration = false
+        -- Dùng pcall để thực thi, nếu game khóa thuộc tính thì script vẫn không bị crash
+        pcall(function() terrain.WaterWaveSize = 0 end)
+        pcall(function() terrain.WaterWaveSpeed = 0 end)
+        pcall(function() terrain.WaterReflectance = 0 end)
+        pcall(function() terrain.WaterTransparency = 0 end)
+        pcall(function() terrain.Decoration = false end) -- Dòng gây lỗi đã được bảo vệ an toàn
     end
     OptTerrainBtn.Text = "✔️ Đã Tối ưu Địa Hình"
     OptTerrainBtn.BackgroundColor3 = Color3.fromRGB(40, 150, 40)
