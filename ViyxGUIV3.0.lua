@@ -1,5 +1,5 @@
 -- ====================================================================
--- PROJECT: ANTI-AFK & FPS OPTIMIZER GUI V3.0
+-- PROJECT: ANTI-AFK & FPS OPTIMIZER GUI V4.0 (PERMANENT OPTIMIZE)
 -- ====================================================================
 
 local Players = game:GetService("Players")
@@ -12,22 +12,22 @@ local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 local function debug_print(msg)
-    print("🤖 [System V3.0]: " .. msg)
+    print("🤖 [System V4.0]: " .. msg)
 end
 
 -- 1. Dọn dẹp bản cũ
-local existingGui = PlayerGui:FindFirstChild("AntiAFK_Gui_V3")
+local existingGui = PlayerGui:FindFirstChild("AntiAFK_Gui_V4")
 if existingGui then existingGui:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "AntiAFK_Gui_V3"
+ScreenGui.Name = "AntiAFK_Gui_V4"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = PlayerGui
 
--- 2. Khung nền chính (MainFrame) - Đã mở rộng chiều cao để chứa nhiều nút
+-- 2. Khung nền chính (MainFrame)
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 260, 0, 360) -- Tăng chiều cao lên 360
+MainFrame.Size = UDim2.new(0, 260, 0, 360) 
 MainFrame.Position = UDim2.new(0.05, 0, 0.3, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15) 
 MainFrame.Active = true
@@ -50,7 +50,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Name = "TitleLabel"
 TitleLabel.Size = UDim2.new(1, 0, 0, 35) 
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "🛡️ OPTIMIZER & ANTI-AFK V3"
+TitleLabel.Text = "🛡️ OPTIMIZER & ANTI-AFK V4"
 TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 TitleLabel.Font = Enum.Font.SourceSansBold
 TitleLabel.TextSize = 16
@@ -58,7 +58,7 @@ TitleLabel.Position = UDim2.new(0, 0, 0, 0)
 TitleLabel.Parent = MainFrame
 
 -- ====================================================================
--- HÀM TẠO NÚT BẤM NHANH (UI FACTORY)
+-- HÀM TẠO NÚT BẤM
 -- ====================================================================
 local function createButton(name, text, posY, sizeY)
     local btn = Instance.new("TextButton")
@@ -84,12 +84,12 @@ local function createButton(name, text, posY, sizeY)
 end
 
 -- 4. Tạo các nút chức năng
-local MainButton = createButton("MainButton", "ANTI-AFK: OFF", 45, 45) -- Nút Anti AFK to hơn chút
+local MainButton = createButton("MainButton", "ANTI-AFK: OFF", 45, 45) 
 local OptLightBtn = createButton("OptLightBtn", "⚡ Tối ưu Ánh Sáng", 100)
-local OptWorldBtn = createButton("OptWorldBtn", "🗑️ Xóa Textures & Hạt", 145)
+local OptWorldBtn = createButton("OptWorldBtn", "🗑️ XÓA TEXTURES: OFF", 145) -- Đổi tên thành nút Bật/Tắt
 local OptTerrainBtn = createButton("OptTerrainBtn", "🌊 Tối ưu Địa Hình", 190)
 
--- 5. Khu vực Keybind
+-- 5. Khu vực Keybind & Trạng thái
 local KeybindButton = createButton("KeybindButton", "⚙️ Phím: [Q]", 250, 30)
 KeybindButton.Size = UDim2.new(0.45, 0, 0, 30)
 KeybindButton.BackgroundColor3 = Color3.fromRGB(139, 92, 246) 
@@ -116,14 +116,15 @@ StatusLabel.Font = Enum.Font.SourceSansItalic
 StatusLabel.TextSize = 14
 StatusLabel.Parent = MainFrame
 
--- ====================================================================
--- LOGIC OPTIMIZER (CÓ YIELDING & WHITELIST)
--- ====================================================================
 local function updateStatus(text)
     StatusLabel.Text = "Trạng thái: " .. text
 end
 
--- Tối ưu Ánh sáng
+-- ====================================================================
+-- LOGIC OPTIMIZER 
+-- ====================================================================
+
+-- ⚡ TỐI ƯU ÁNH SÁNG
 OptLightBtn.MouseButton1Click:Connect(function()
     updateStatus("Đang tối ưu ánh sáng...")
     local lighting = game:GetService("Lighting")
@@ -141,64 +142,87 @@ OptLightBtn.MouseButton1Click:Connect(function()
     updateStatus("Hoàn tất tối ưu ánh sáng!")
 end)
 
--- Tối ưu Môi trường (Có task.wait và Whitelist)
-OptWorldBtn.MouseButton1Click:Connect(function()
-    updateStatus("Đang quét và xóa tài nguyên...")
-    local count = 0
-    
-    for _, v in pairs(workspace:GetDescendants()) do
-        -- NÂNG CẤP: WHITELIST - Bỏ qua Character của người chơi để không làm nhân vật bị tàng hình/xấu đi
-        local model = v:FindFirstAncestorWhichIsA("Model")
-        if model and Players:GetPlayerFromCharacter(model) then
-            continue 
-        end
-
-        -- NÂNG CẤP: WHITELIST - Bỏ qua các vật phẩm quan trọng
-        if v.Name == "Handle" or v:IsA("SpawnLocation") or v:IsA("Tool") then
-            continue
-        end
-
-        if v:IsA("BasePart") then
-            v.Material = Enum.Material.SmoothPlastic
-            v.Reflectance = 0
-            v.CastShadow = false
-        elseif v:IsA("Texture") or v:IsA("Decal") then
-            v:Destroy()
-        elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Beam") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then
-            v.Enabled = false
-        end
-
-        -- NÂNG CẤP: YIELDING - Ngăn chặn tình trạng đứng game (Freeze)
-        count = count + 1
-        if count % 800 == 0 then
-            task.wait() -- Cho phép game thở 1 frame sau mỗi 800 part được xử lý
-        end
-    end
-    
-    OptWorldBtn.Text = "✔️ Đã Xóa Textures/Hạt"
-    OptWorldBtn.BackgroundColor3 = Color3.fromRGB(40, 150, 40)
-    updateStatus("Xong! Đã quét " .. count .. " vật thể.")
-end)
-
--- Tối ưu Địa hình
+-- 🌊 TỐI ƯU ĐỊA HÌNH (ĐÃ FIX LỖI DECORATION)
 OptTerrainBtn.MouseButton1Click:Connect(function()
     updateStatus("Đang tối ưu địa hình...")
     local terrain = workspace:FindFirstChildOfClass("Terrain")
     if terrain then
-        -- Dùng pcall để thực thi, nếu game khóa thuộc tính thì script vẫn không bị crash
         pcall(function() terrain.WaterWaveSize = 0 end)
         pcall(function() terrain.WaterWaveSpeed = 0 end)
         pcall(function() terrain.WaterReflectance = 0 end)
         pcall(function() terrain.WaterTransparency = 0 end)
-        pcall(function() terrain.Decoration = false end) -- Dòng gây lỗi đã được bảo vệ an toàn
+        -- Đã xóa bỏ hoàn toàn dòng lỗi Decoration
     end
     OptTerrainBtn.Text = "✔️ Đã Tối ưu Địa Hình"
     OptTerrainBtn.BackgroundColor3 = Color3.fromRGB(40, 150, 40)
-    updateStatus("Hoàn tất địa hình nước/cỏ!")
+    updateStatus("Hoàn tất địa hình nước!")
+end)
+
+-- 🗑️ LOGIC XÓA TEXTURE VĨNH VIỄN
+local autoOptimizeWorld = false
+local worldConnection = nil
+
+-- Hàm lõi dùng để dọn dẹp 1 vật thể bất kỳ
+local function cleanObject(v)
+    -- Whitelist: Bỏ qua người chơi và vật phẩm quan trọng
+    local model = v:FindFirstAncestorWhichIsA("Model")
+    if model and Players:GetPlayerFromCharacter(model) then return end
+    if v.Name == "Handle" or v:IsA("SpawnLocation") or v:IsA("Tool") then return end
+
+    if v:IsA("BasePart") then
+        v.Material = Enum.Material.SmoothPlastic
+        v.Reflectance = 0
+        v.CastShadow = false
+    elseif v:IsA("Texture") or v:IsA("Decal") then
+        v:Destroy()
+    elseif v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Beam") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then
+        v.Enabled = false
+    end
+end
+
+OptWorldBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68) -- Mặc định là đỏ (OFF)
+OptWorldBtn.MouseButton1Click:Connect(function()
+    autoOptimizeWorld = not autoOptimizeWorld
+    
+    if autoOptimizeWorld then
+        OptWorldBtn.Text = "XÓA TEXTURES: ON"
+        OptWorldBtn.BackgroundColor3 = Color3.fromRGB(139, 92, 246) -- Chuyển sang Tím (ON)
+        updateStatus("Đang quét toàn bộ map...")
+        
+        -- 1. Quét sạch sẽ những thứ ĐANG TỒN TẠI trên map
+        local count = 0
+        for _, v in pairs(workspace:GetDescendants()) do
+            cleanObject(v)
+            count = count + 1
+            if count % 800 == 0 then task.wait() end
+        end
+        
+        -- 2. Đặt "Bẫy" lắng nghe những thứ MỚI SPAWN ra từ giờ đến cuối game
+        worldConnection = workspace.DescendantAdded:Connect(function(newObj)
+            -- Dùng task.delay 0.1s để chờ vật thể load xong thuộc tính rồi mới dọn dẹp
+            task.delay(0.1, function()
+                if autoOptimizeWorld then
+                    cleanObject(newObj)
+                end
+            end)
+        end)
+        
+        updateStatus("Đã BẬT dọn dẹp vĩnh viễn!")
+    else
+        OptWorldBtn.Text = "XÓA TEXTURES: OFF"
+        OptWorldBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68) -- Chuyển về Đỏ (OFF)
+        
+        -- Hủy bỏ sự kiện lắng nghe để ngưng xóa
+        if worldConnection then
+            worldConnection:Disconnect()
+            worldConnection = nil
+        end
+        updateStatus("Đã TẮT dọn dẹp vĩnh viễn.")
+    end
 end)
 
 -- ====================================================================
--- LOGIC ANTI-AFK & KEYBIND (GIỮ NGUYÊN BẢN CŨ CỦA BẠN)
+-- LOGIC ANTI-AFK & KEYBIND
 -- ====================================================================
 local antiAFKEnabled = false 
 local currentKeybind = Enum.KeyCode.Q 
@@ -262,8 +286,7 @@ idledConnection = LocalPlayer.Idled:Connect(function()
     if antiAFKEnabled then
         VirtualUser:CaptureController()
         VirtualUser:ClickButton2(Vector2.new(0, 0))
-        debug_print("Đã giả lập click chuột chống AFK!")
     end
 end)
 
-debug_print("✅ SCRIPT V3.0 CHẠY THÀNH CÔNG!")
+debug_print("✅ SCRIPT V4.0 CHẠY THÀNH CÔNG!")
