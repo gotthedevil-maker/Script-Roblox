@@ -1,6 +1,6 @@
 -- ====================================================================
 -- PROJECT: ANTI-AFK & FPS OPTIMIZER GUI V4.0 (PERMANENT OPTIMIZE)
--- Cập nhật: Sửa lỗi đơ nút, Tối ưu bộ nhớ giảm Ping, Tách lớp UI chống che Chat
+-- Cập nhật: Xóa bỏ hàm collectgarbage gây lỗi spam Console F9
 -- ====================================================================
 
 local Players = game:GetService("Players")
@@ -10,6 +10,7 @@ local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 local function debug_print(msg)
     print("🤖 [System V4.0]: " .. msg)
@@ -20,14 +21,13 @@ end
 -- ====================================================================
 local TargetParent = pcall(function() return gethui() end) and gethui() or CoreGui
 
--- Dọn dẹp bản cũ (Cả Menu và Màn hình đen nếu có)
+-- Dọn dẹp bản cũ ở cả 2 khu vực (CoreGui và PlayerGui)
 if TargetParent:FindFirstChild("AntiAFK_Gui_V4") then TargetParent:FindFirstChild("AntiAFK_Gui_V4"):Destroy() end
-if TargetParent:FindFirstChild("AntiAFK_BlackoutGui") then TargetParent:FindFirstChild("AntiAFK_BlackoutGui"):Destroy() end
+if PlayerGui:FindFirstChild("AntiAFK_BlackoutGui") then PlayerGui:FindFirstChild("AntiAFK_BlackoutGui"):Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "AntiAFK_Gui_V4"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.DisplayOrder = 100 -- Đẩy Menu lên lớp cao nhất để không bao giờ bị che
 ScreenGui.Parent = TargetParent
 
 -- 2. Khung nền chính (MainFrame)
@@ -255,11 +255,10 @@ OptWorldBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ====================================================================
--- 5. LOGIC ZEN MODE (CHỐNG FREEZE & TỐI ƯU PING KHI LOAD LAYOUT)
+-- 5. LOGIC ZEN MODE (CHỐNG FREEZE & KHÔNG CHE CHAT)
 -- ====================================================================
 local isZenMode = false
 local BlackoutGui = nil
-local gcConnection = nil
 
 ZenModeBtn.MouseButton1Click:Connect(function()
     isZenMode = not isZenMode
@@ -267,14 +266,13 @@ ZenModeBtn.MouseButton1Click:Connect(function()
     if isZenMode then
         ZenModeBtn.Text = "🛑 ĐANG CHỐNG LAG... BẤM ĐỂ TẮT"
         ZenModeBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68) 
-        updateStatus("Đã che mắt GPU & Tối ưu RAM. Hãy Load Layout ngay!")
+        updateStatus("Đã che mắt GPU. Hãy Load Layout ngay!")
         
-        -- Tạo ScreenGui riêng cho Màn hình đen
+        -- Tạo ScreenGui riêng cho Màn hình đen và ném vào PlayerGui
         BlackoutGui = Instance.new("ScreenGui")
         BlackoutGui.Name = "AntiAFK_BlackoutGui"
-        BlackoutGui.DisplayOrder = -1 -- Đẩy xuống dưới Chat và UI hệ thống
-        BlackoutGui.IgnoreGuiInset = true -- Bao phủ toàn bộ màn hình (kể cả viền trên cùng)
-        BlackoutGui.Parent = TargetParent
+        BlackoutGui.IgnoreGuiInset = true 
+        BlackoutGui.Parent = PlayerGui 
         
         local blackoutFrame = Instance.new("Frame")
         blackoutFrame.Size = UDim2.new(1, 0, 1, 0)
@@ -284,7 +282,7 @@ ZenModeBtn.MouseButton1Click:Connect(function()
         local loadingText = Instance.new("TextLabel")
         loadingText.Size = UDim2.new(1, 0, 1, 0)
         loadingText.BackgroundTransparency = 1
-        loadingText.Text = "ĐANG LOAD LAYOUT...\n(Hệ thống đang vô hiệu hóa Render và ép dọn dẹp RAM)"
+        loadingText.Text = "ĐANG LOAD LAYOUT...\n(Hệ thống đang vô hiệu hóa Render)"
         loadingText.TextColor3 = Color3.fromRGB(255, 255, 255)
         loadingText.Font = Enum.Font.SourceSansBold
         loadingText.TextSize = 24
@@ -292,21 +290,14 @@ ZenModeBtn.MouseButton1Click:Connect(function()
         
         pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
         
-        -- Dọn rác liên tục để chống nghẽn bộ nhớ gây lag Ping
-        gcConnection = RunService.Heartbeat:Connect(function()
-            collectgarbage("step", 100)
-        end)
-        
     else
         ZenModeBtn.Text = "🚀 CHỐNG LAG KHI LOAD LAYOUT"
         ZenModeBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
         updateStatus("Đã gỡ màn hình chờ.")
         
         if BlackoutGui then BlackoutGui:Destroy() BlackoutGui = nil end
-        if gcConnection then gcConnection:Disconnect() gcConnection = nil end
         
         pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic end)
-        collectgarbage("collect") -- Dọn dẹp tổng thể lần cuối
     end
 end)
 
