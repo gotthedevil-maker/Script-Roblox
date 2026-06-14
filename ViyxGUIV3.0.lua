@@ -1,6 +1,6 @@
 -- ====================================================================
 -- PROJECT: ANTI-AFK & FPS OPTIMIZER GUI V4.0 (PERMANENT OPTIMIZE)
--- Đã được sửa lỗi đơ nút và tối ưu cho Executor
+-- Cập nhật: Sửa lỗi đơ nút, Tối ưu bộ nhớ giảm Ping, Tách lớp UI chống che Chat
 -- ====================================================================
 
 local Players = game:GetService("Players")
@@ -18,16 +18,16 @@ end
 -- ====================================================================
 -- 1. SETUP UI & KHẮC PHỤC LỖI EXECUTOR
 -- ====================================================================
--- Sử dụng gethui() hoặc CoreGui để game không đè UI lên và không block click
 local TargetParent = pcall(function() return gethui() end) and gethui() or CoreGui
 
--- Dọn dẹp bản cũ
-local existingGui = TargetParent:FindFirstChild("AntiAFK_Gui_V4")
-if existingGui then existingGui:Destroy() end
+-- Dọn dẹp bản cũ (Cả Menu và Màn hình đen nếu có)
+if TargetParent:FindFirstChild("AntiAFK_Gui_V4") then TargetParent:FindFirstChild("AntiAFK_Gui_V4"):Destroy() end
+if TargetParent:FindFirstChild("AntiAFK_BlackoutGui") then TargetParent:FindFirstChild("AntiAFK_BlackoutGui"):Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "AntiAFK_Gui_V4"
 ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 100 -- Đẩy Menu lên lớp cao nhất để không bao giờ bị che
 ScreenGui.Parent = TargetParent
 
 -- 2. Khung nền chính (MainFrame)
@@ -50,11 +50,8 @@ FrameStroke.Color = Color3.fromRGB(139, 92, 246)
 FrameStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 FrameStroke.Parent = MainFrame
 
--- Hệ thống Drag (Kéo thả) mượt mà thay thế cho Draggable = true
-local dragging
-local dragInput
-local dragStart
-local startPos
+-- Hệ thống Drag (Kéo thả) mượt mà
+local dragging, dragInput, dragStart, startPos
 
 local function update(input)
     local delta = input.Position - dragStart
@@ -91,7 +88,6 @@ end)
 -- 3. THIẾT KẾ GIAO DIỆN CHÍNH
 -- ====================================================================
 
--- Tiêu đề
 local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Name = "TitleLabel"
 TitleLabel.Size = UDim2.new(1, 0, 0, 35) 
@@ -103,7 +99,6 @@ TitleLabel.TextSize = 16
 TitleLabel.Position = UDim2.new(0, 0, 0, 0)
 TitleLabel.Parent = MainFrame
 
--- Hàm tạo nút bấm
 local function createButton(name, text, posY, sizeY)
     local btn = Instance.new("TextButton")
     btn.Name = name
@@ -127,7 +122,6 @@ local function createButton(name, text, posY, sizeY)
     return btn
 end
 
--- Tạo các nút chức năng
 local MainButton = createButton("MainButton", "ANTI-AFK: OFF", 45, 45) 
 local OptLightBtn = createButton("OptLightBtn", "⚡ Tối ưu Ánh Sáng", 100)
 local OptWorldBtn = createButton("OptWorldBtn", "🗑️ XÓA TEXTURES: OFF", 145) 
@@ -136,7 +130,6 @@ local OptTerrainBtn = createButton("OptTerrainBtn", "🌊 Tối ưu Địa Hình
 local ZenModeBtn = createButton("ZenModeBtn", "🚀 CHỐNG LAG KHI LOAD LAYOUT", 235)
 ZenModeBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255) 
 
--- Khu vực Keybind & Trạng thái
 local KeybindButton = createButton("KeybindButton", "⚙️ Phím: [Q]", 295, 30)
 KeybindButton.Size = UDim2.new(0.45, 0, 0, 30)
 KeybindButton.BackgroundColor3 = Color3.fromRGB(139, 92, 246) 
@@ -262,10 +255,11 @@ OptWorldBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ====================================================================
--- 5. LOGIC ZEN MODE (CHỐNG FREEZE KHI LOAD LAYOUT)
+-- 5. LOGIC ZEN MODE (CHỐNG FREEZE & TỐI ƯU PING KHI LOAD LAYOUT)
 -- ====================================================================
 local isZenMode = false
-local blackoutFrame = nil
+local BlackoutGui = nil
+local gcConnection = nil
 
 ZenModeBtn.MouseButton1Click:Connect(function()
     isZenMode = not isZenMode
@@ -273,19 +267,24 @@ ZenModeBtn.MouseButton1Click:Connect(function()
     if isZenMode then
         ZenModeBtn.Text = "🛑 ĐANG CHỐNG LAG... BẤM ĐỂ TẮT"
         ZenModeBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68) 
-        updateStatus("Đã che mắt GPU. Hãy bấm Load Layout ngay!")
+        updateStatus("Đã che mắt GPU & Tối ưu RAM. Hãy Load Layout ngay!")
         
-        blackoutFrame = Instance.new("Frame")
+        -- Tạo ScreenGui riêng cho Màn hình đen
+        BlackoutGui = Instance.new("ScreenGui")
+        BlackoutGui.Name = "AntiAFK_BlackoutGui"
+        BlackoutGui.DisplayOrder = -1 -- Đẩy xuống dưới Chat và UI hệ thống
+        BlackoutGui.IgnoreGuiInset = true -- Bao phủ toàn bộ màn hình (kể cả viền trên cùng)
+        BlackoutGui.Parent = TargetParent
+        
+        local blackoutFrame = Instance.new("Frame")
         blackoutFrame.Size = UDim2.new(1, 0, 1, 0)
-        blackoutFrame.Position = UDim2.new(0, 0, 0, -50) 
         blackoutFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-        blackoutFrame.ZIndex = 9999 
-        blackoutFrame.Parent = ScreenGui
+        blackoutFrame.Parent = BlackoutGui
         
         local loadingText = Instance.new("TextLabel")
         loadingText.Size = UDim2.new(1, 0, 1, 0)
         loadingText.BackgroundTransparency = 1
-        loadingText.Text = "ĐANG LOAD LAYOUT...\n(Hệ thống đang vô hiệu hóa Render để chống văng game)"
+        loadingText.Text = "ĐANG LOAD LAYOUT...\n(Hệ thống đang vô hiệu hóa Render và ép dọn dẹp RAM)"
         loadingText.TextColor3 = Color3.fromRGB(255, 255, 255)
         loadingText.Font = Enum.Font.SourceSansBold
         loadingText.TextSize = 24
@@ -293,17 +292,21 @@ ZenModeBtn.MouseButton1Click:Connect(function()
         
         pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
         
+        -- Dọn rác liên tục để chống nghẽn bộ nhớ gây lag Ping
+        gcConnection = RunService.Heartbeat:Connect(function()
+            collectgarbage("step", 100)
+        end)
+        
     else
         ZenModeBtn.Text = "🚀 CHỐNG LAG KHI LOAD LAYOUT"
         ZenModeBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
         updateStatus("Đã gỡ màn hình chờ.")
         
-        if blackoutFrame then
-            blackoutFrame:Destroy()
-            blackoutFrame = nil
-        end
+        if BlackoutGui then BlackoutGui:Destroy() BlackoutGui = nil end
+        if gcConnection then gcConnection:Disconnect() gcConnection = nil end
         
         pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic end)
+        collectgarbage("collect") -- Dọn dẹp tổng thể lần cuối
     end
 end)
 
