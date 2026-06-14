@@ -86,26 +86,21 @@ end
 -- 4. Tạo các nút chức năng
 local MainButton = createButton("MainButton", "ANTI-AFK: OFF", 45, 45) 
 local OptLightBtn = createButton("OptLightBtn", "⚡ Tối ưu Ánh Sáng", 100)
-local OptWorldBtn = createButton("OptWorldBtn", "🗑️ XÓA TEXTURES: OFF", 145) -- Đổi tên thành nút Bật/Tắt
+local OptWorldBtn = createButton("OptWorldBtn", "🗑️ XÓA TEXTURES: OFF", 145) 
 local OptTerrainBtn = createButton("OptTerrainBtn", "🌊 Tối ưu Địa Hình", 190)
 
 local ZenModeBtn = createButton("ZenModeBtn", "🚀 CHỐNG LAG KHI LOAD LAYOUT", 235)
-ZenModeBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255) -- Màu xanh dương nổi bật
+ZenModeBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255) 
 
--- Kéo các phần tử bên dưới (Keybind, Status) dịch xuống dưới một chút
-KeybindButton.Position = UDim2.new(0.075, 0, 0, 295)
-ExplanationLabel.Position = UDim2.new(0.55, 0, 0, 295)
-StatusLabel.Position = UDim2.new(0.075, 0, 0, 345)
-
--- 5. Khu vực Keybind & Trạng thái
-local KeybindButton = createButton("KeybindButton", "⚙️ Phím: [Q]", 250, 30)
+-- 5. Khu vực Keybind & Trạng thái (Đã cập nhật tọa độ thẳng vào đây)
+local KeybindButton = createButton("KeybindButton", "⚙️ Phím: [Q]", 295, 30)
 KeybindButton.Size = UDim2.new(0.45, 0, 0, 30)
 KeybindButton.BackgroundColor3 = Color3.fromRGB(139, 92, 246) 
 
 local ExplanationLabel = Instance.new("TextLabel")
 ExplanationLabel.Name = "ExplanationLabel"
 ExplanationLabel.Size = UDim2.new(0.4, 0, 0, 30)
-ExplanationLabel.Position = UDim2.new(0.55, 0, 0, 250) 
+ExplanationLabel.Position = UDim2.new(0.55, 0, 0, 295) 
 ExplanationLabel.BackgroundTransparency = 1
 ExplanationLabel.Text = "Nhấn để Ẩn/Hiện UI"
 ExplanationLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
@@ -116,7 +111,7 @@ ExplanationLabel.Parent = MainFrame
 local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Name = "StatusLabel"
 StatusLabel.Size = UDim2.new(0.85, 0, 0, 20)
-StatusLabel.Position = UDim2.new(0.075, 0, 0, 300) 
+StatusLabel.Position = UDim2.new(0.075, 0, 0, 345) 
 StatusLabel.BackgroundTransparency = 1
 StatusLabel.Text = "Trạng thái: Đang chờ..."
 StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 127)
@@ -150,7 +145,7 @@ OptLightBtn.MouseButton1Click:Connect(function()
     updateStatus("Hoàn tất tối ưu ánh sáng!")
 end)
 
--- 🌊 TỐI ƯU ĐỊA HÌNH (ĐÃ FIX LỖI DECORATION)
+-- 🌊 TỐI ƯU ĐỊA HÌNH 
 OptTerrainBtn.MouseButton1Click:Connect(function()
     updateStatus("Đang tối ưu địa hình...")
     local terrain = workspace:FindFirstChildOfClass("Terrain")
@@ -159,7 +154,6 @@ OptTerrainBtn.MouseButton1Click:Connect(function()
         pcall(function() terrain.WaterWaveSpeed = 0 end)
         pcall(function() terrain.WaterReflectance = 0 end)
         pcall(function() terrain.WaterTransparency = 0 end)
-        -- Đã xóa bỏ hoàn toàn dòng lỗi Decoration
     end
     OptTerrainBtn.Text = "✔️ Đã Tối ưu Địa Hình"
     OptTerrainBtn.BackgroundColor3 = Color3.fromRGB(40, 150, 40)
@@ -170,9 +164,7 @@ end)
 local autoOptimizeWorld = false
 local worldConnection = nil
 
--- Hàm lõi dùng để dọn dẹp 1 vật thể bất kỳ
 local function cleanObject(v)
-    -- Whitelist: Bỏ qua người chơi và vật phẩm quan trọng
     local model = v:FindFirstAncestorWhichIsA("Model")
     if model and Players:GetPlayerFromCharacter(model) then return end
     if v.Name == "Handle" or v:IsA("SpawnLocation") or v:IsA("Tool") then return end
@@ -188,16 +180,15 @@ local function cleanObject(v)
     end
 end
 
-OptWorldBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68) -- Mặc định là đỏ (OFF)
+OptWorldBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68)
 OptWorldBtn.MouseButton1Click:Connect(function()
     autoOptimizeWorld = not autoOptimizeWorld
     
     if autoOptimizeWorld then
         OptWorldBtn.Text = "XÓA TEXTURES: ON"
-        OptWorldBtn.BackgroundColor3 = Color3.fromRGB(139, 92, 246) -- Chuyển sang Tím (ON)
+        OptWorldBtn.BackgroundColor3 = Color3.fromRGB(139, 92, 246)
         updateStatus("Đang quét toàn bộ map...")
         
-        -- 1. Quét sạch sẽ những thứ ĐANG TỒN TẠI trên map
         local count = 0
         for _, v in pairs(workspace:GetDescendants()) do
             cleanObject(v)
@@ -205,9 +196,7 @@ OptWorldBtn.MouseButton1Click:Connect(function()
             if count % 800 == 0 then task.wait() end
         end
         
-        -- 2. Đặt "Bẫy" lắng nghe những thứ MỚI SPAWN ra từ giờ đến cuối game
         worldConnection = workspace.DescendantAdded:Connect(function(newObj)
-            -- Dùng task.delay 0.1s để chờ vật thể load xong thuộc tính rồi mới dọn dẹp
             task.delay(0.1, function()
                 if autoOptimizeWorld then
                     cleanObject(newObj)
@@ -218,9 +207,8 @@ OptWorldBtn.MouseButton1Click:Connect(function()
         updateStatus("Đã BẬT dọn dẹp vĩnh viễn!")
     else
         OptWorldBtn.Text = "XÓA TEXTURES: OFF"
-        OptWorldBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68) -- Chuyển về Đỏ (OFF)
+        OptWorldBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68) 
         
-        -- Hủy bỏ sự kiện lắng nghe để ngưng xóa
         if worldConnection then
             worldConnection:Disconnect()
             worldConnection = nil
@@ -240,18 +228,16 @@ ZenModeBtn.MouseButton1Click:Connect(function()
     
     if isZenMode then
         ZenModeBtn.Text = "🛑 ĐANG CHỐNG LAG... BẤM ĐỂ TẮT"
-        ZenModeBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68) -- Chuyển đỏ
+        ZenModeBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68) 
         updateStatus("Đã che mắt GPU. Hãy bấm Load Layout ngay!")
         
-        -- Tạo màn hình đen che phủ toàn bộ để GPU không phải Render 3D
         blackoutFrame = Instance.new("Frame")
         blackoutFrame.Size = UDim2.new(1, 0, 1, 0)
-        blackoutFrame.Position = UDim2.new(0, 0, 0, -50) -- Che luôn thanh top bar của Roblox
+        blackoutFrame.Position = UDim2.new(0, 0, 0, -50) 
         blackoutFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-        blackoutFrame.ZIndex = 9999 -- Nằm trên cùng
+        blackoutFrame.ZIndex = 9999 
         blackoutFrame.Parent = ScreenGui
         
-        -- Thêm chữ Đang Tải
         local loadingText = Instance.new("TextLabel")
         loadingText.Size = UDim2.new(1, 0, 1, 0)
         loadingText.BackgroundTransparency = 1
@@ -261,7 +247,6 @@ ZenModeBtn.MouseButton1Click:Connect(function()
         loadingText.TextSize = 24
         loadingText.Parent = blackoutFrame
         
-        -- Hạ mức cấu hình xuống thấp nhất có thể bằng code
         pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
         
     else
@@ -269,13 +254,11 @@ ZenModeBtn.MouseButton1Click:Connect(function()
         ZenModeBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
         updateStatus("Đã gỡ màn hình chờ.")
         
-        -- Xóa màn hình đen, cho phép GPU render lại
         if blackoutFrame then
             blackoutFrame:Destroy()
             blackoutFrame = nil
         end
         
-        -- Trả cấu hình về Auto (Tự động)
         pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic end)
     end
 end)
