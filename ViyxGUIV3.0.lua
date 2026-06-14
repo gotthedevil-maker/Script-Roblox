@@ -27,7 +27,7 @@ ScreenGui.Parent = PlayerGui
 -- 2. Khung nền chính (MainFrame)
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 260, 0, 360) 
+MainFrame.Size = UDim2.new(0, 260, 0, 405) 
 MainFrame.Position = UDim2.new(0.05, 0, 0.3, 0)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15) 
 MainFrame.Active = true
@@ -88,6 +88,14 @@ local MainButton = createButton("MainButton", "ANTI-AFK: OFF", 45, 45)
 local OptLightBtn = createButton("OptLightBtn", "⚡ Tối ưu Ánh Sáng", 100)
 local OptWorldBtn = createButton("OptWorldBtn", "🗑️ XÓA TEXTURES: OFF", 145) -- Đổi tên thành nút Bật/Tắt
 local OptTerrainBtn = createButton("OptTerrainBtn", "🌊 Tối ưu Địa Hình", 190)
+
+local ZenModeBtn = createButton("ZenModeBtn", "🚀 CHỐNG LAG KHI LOAD LAYOUT", 235)
+ZenModeBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255) -- Màu xanh dương nổi bật
+
+-- Kéo các phần tử bên dưới (Keybind, Status) dịch xuống dưới một chút
+KeybindButton.Position = UDim2.new(0.075, 0, 0, 295)
+ExplanationLabel.Position = UDim2.new(0.55, 0, 0, 295)
+StatusLabel.Position = UDim2.new(0.075, 0, 0, 345)
 
 -- 5. Khu vực Keybind & Trạng thái
 local KeybindButton = createButton("KeybindButton", "⚙️ Phím: [Q]", 250, 30)
@@ -218,6 +226,57 @@ OptWorldBtn.MouseButton1Click:Connect(function()
             worldConnection = nil
         end
         updateStatus("Đã TẮT dọn dẹp vĩnh viễn.")
+    end
+end)
+
+-- ====================================================================
+-- LOGIC ZEN MODE (CHỐNG FREEZE KHI LOAD LAYOUT)
+-- ====================================================================
+local isZenMode = false
+local blackoutFrame = nil
+
+ZenModeBtn.MouseButton1Click:Connect(function()
+    isZenMode = not isZenMode
+    
+    if isZenMode then
+        ZenModeBtn.Text = "🛑 ĐANG CHỐNG LAG... BẤM ĐỂ TẮT"
+        ZenModeBtn.BackgroundColor3 = Color3.fromRGB(239, 68, 68) -- Chuyển đỏ
+        updateStatus("Đã che mắt GPU. Hãy bấm Load Layout ngay!")
+        
+        -- Tạo màn hình đen che phủ toàn bộ để GPU không phải Render 3D
+        blackoutFrame = Instance.new("Frame")
+        blackoutFrame.Size = UDim2.new(1, 0, 1, 0)
+        blackoutFrame.Position = UDim2.new(0, 0, 0, -50) -- Che luôn thanh top bar của Roblox
+        blackoutFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        blackoutFrame.ZIndex = 9999 -- Nằm trên cùng
+        blackoutFrame.Parent = ScreenGui
+        
+        -- Thêm chữ Đang Tải
+        local loadingText = Instance.new("TextLabel")
+        loadingText.Size = UDim2.new(1, 0, 1, 0)
+        loadingText.BackgroundTransparency = 1
+        loadingText.Text = "ĐANG LOAD LAYOUT...\n(Hệ thống đang vô hiệu hóa Render để chống văng game)"
+        loadingText.TextColor3 = Color3.fromRGB(255, 255, 255)
+        loadingText.Font = Enum.Font.SourceSansBold
+        loadingText.TextSize = 24
+        loadingText.Parent = blackoutFrame
+        
+        -- Hạ mức cấu hình xuống thấp nhất có thể bằng code
+        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+        
+    else
+        ZenModeBtn.Text = "🚀 CHỐNG LAG KHI LOAD LAYOUT"
+        ZenModeBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+        updateStatus("Đã gỡ màn hình chờ.")
+        
+        -- Xóa màn hình đen, cho phép GPU render lại
+        if blackoutFrame then
+            blackoutFrame:Destroy()
+            blackoutFrame = nil
+        end
+        
+        -- Trả cấu hình về Auto (Tự động)
+        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic end)
     end
 end)
 
