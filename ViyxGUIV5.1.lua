@@ -1,6 +1,6 @@
 -- ====================================================================
--- PROJECT: ANTI-AFK & FPS OPTIMIZER GUI V5.0 (UI REMAKE + AUTO KEYS)
--- Cập nhật: Làm lại UI chuyên nghiệp theo Dark Theme, thêm Auto 1-5
+-- PROJECT: ANTI-AFK & FPS OPTIMIZER GUI V5.1 
+-- Cập nhật: Fix lỗi Layout UI, Đổi tên By Viyx, Tách riêng Auto Phím 1-5
 -- ====================================================================
 
 local Players = game:GetService("Players")
@@ -14,18 +14,18 @@ local Lighting = game:GetService("Lighting")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- Bảng màu chuẩn theo ảnh mẫu
+-- Bảng màu chuẩn Dark Theme
 local Theme = {
-    Background = Color3.fromRGB(30, 30, 45),     -- Nền chính (Xanh đen)
-    Sidebar = Color3.fromRGB(25, 25, 38),        -- Nền cột trái
-    Accent = Color3.fromRGB(99, 102, 241),       -- Tím/Xanh dương nổi bật
-    RowBg = Color3.fromRGB(35, 35, 52),          -- Nền từng hàng chức năng
+    Background = Color3.fromRGB(30, 30, 45),     
+    Sidebar = Color3.fromRGB(25, 25, 38),        
+    Accent = Color3.fromRGB(99, 102, 241),       
+    RowBg = Color3.fromRGB(35, 35, 52),          
     TextMain = Color3.fromRGB(240, 240, 240),
     TextMuted = Color3.fromRGB(150, 150, 170)
 }
 
 -- ====================================================================
--- 1. SETUP UI & KHẮC PHỤC LỖI EXECUTOR
+-- 1. SETUP UI & XÓA UI CŨ
 -- ====================================================================
 local TargetParent = pcall(function() return gethui() end) and gethui() or CoreGui
 
@@ -37,7 +37,7 @@ ScreenGui.Name = "AntiAFK_Gui_V5"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = TargetParent
 
--- Khung nền chính (MainFrame)
+-- Khung nền chính
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
 MainFrame.Size = UDim2.new(0, 520, 0, 340) 
@@ -51,7 +51,7 @@ local MainCorner = Instance.new("UICorner")
 MainCorner.CornerRadius = UDim.new(0, 8)
 MainCorner.Parent = MainFrame
 
--- Top Bar (Để kéo UI)
+-- Top Bar (Để kéo thả UI)
 local TopBar = Instance.new("Frame")
 TopBar.Size = UDim2.new(1, 0, 0, 30)
 TopBar.BackgroundTransparency = 1
@@ -61,7 +61,7 @@ local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, -40, 1, 0)
 Title.Position = UDim2.new(0, 15, 0, 0)
 Title.BackgroundTransparency = 1
-Title.Text = "Menu GUI | By S I L X N C E (V5.0)"
+Title.Text = "Menu GUI | By Viyx (V5.1)" -- Đã đổi tên theo yêu cầu
 Title.TextColor3 = Theme.TextMain
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 13
@@ -82,7 +82,7 @@ CloseBtn.MouseButton1Click:Connect(function()
     ScreenGui:Destroy()
 end)
 
--- Kéo thả UI
+-- Code kéo thả UI
 local dragging, dragInput, dragStart, startPos
 TopBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -105,7 +105,7 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 -- ====================================================================
--- 2. TẠO CẤU TRÚC LAYOUT (SIDEBAR & CONTENT)
+-- 2. TẠO CẤU TRÚC LAYOUT (ĐÃ FIX LỖI)
 -- ====================================================================
 local Sidebar = Instance.new("Frame")
 Sidebar.Size = UDim2.new(0, 140, 1, -30)
@@ -117,13 +117,14 @@ Sidebar.Parent = MainFrame
 local SidebarCorner = Instance.new("UICorner")
 SidebarCorner.CornerRadius = UDim.new(0, 8)
 SidebarCorner.Parent = Sidebar
--- Che góc bo phải của Sidebar để nối liền với Content
+
+-- FIX LỖI: Chuyển SidebarPatch ra khỏi Sidebar để không bị ảnh hưởng bởi UIListLayout
 local SidebarPatch = Instance.new("Frame")
-SidebarPatch.Size = UDim2.new(0, 8, 1, 0)
-SidebarPatch.Position = UDim2.new(1, -8, 0, 0)
+SidebarPatch.Size = UDim2.new(0, 8, 1, -30)
+SidebarPatch.Position = UDim2.new(0, 132, 0, 30) -- Căn sát rìa phải của Sidebar
 SidebarPatch.BackgroundColor3 = Theme.Sidebar
 SidebarPatch.BorderSizePixel = 0
-SidebarPatch.Parent = Sidebar
+SidebarPatch.Parent = MainFrame 
 
 local SidebarList = Instance.new("UIListLayout")
 SidebarList.SortOrder = Enum.SortOrder.LayoutOrder
@@ -144,7 +145,6 @@ ContentArea.Parent = MainFrame
 
 local Tabs = {}
 local TabContents = {}
-local currentTab = nil
 
 local function switchTab(tabName)
     for name, content in pairs(TabContents) do content.Visible = (name == tabName) end
@@ -185,13 +185,14 @@ local function createTab(name, title)
 
     local ContentLayout = Instance.new("UIListLayout")
     ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    ContentLayout.Padding = UDim.new(0, 2)
+    ContentLayout.Padding = UDim.new(0, 4) -- Tạo khoảng cách giữa các nút
     ContentLayout.Parent = ScrollContent
 
     local ContentPadding = Instance.new("UIPadding")
     ContentPadding.PaddingTop = UDim.new(0, 10)
     ContentPadding.PaddingLeft = UDim.new(0, 10)
     ContentPadding.PaddingRight = UDim.new(0, 15)
+    ContentPadding.PaddingBottom = UDim.new(0, 10) -- Padding dưới cho đỡ dính lề
     ContentPadding.Parent = ScrollContent
 
     Tabs[name] = TabBtn
@@ -203,7 +204,7 @@ local function createTab(name, title)
 end
 
 -- ====================================================================
--- 3. HÀM TẠO CÁC COMPONENT GIAO DIỆN CON (SECTION, TOGGLE, SLIDER)
+-- 3. HÀM TẠO CÁC COMPONENT GIAO DIỆN CON
 -- ====================================================================
 local function addSection(parent, titleText)
     local SectionFrame = Instance.new("Frame")
@@ -279,7 +280,7 @@ local function addToggle(parent, icon, text, default, callback)
     ToggleBtn.MouseButton1Click:Connect(function()
         state = not state
         ToggleBtn.BackgroundColor3 = state and Theme.Accent or Color3.fromRGB(50, 50, 70)
-        Indicator:TweenPosition(state and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8), Enum.EasingDirection.Out, Enum.EasingStyle.Sine, 0.2, true)
+        Indicator:TweenPosition(state and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8), Enum.EasingDirection.Out, Enum.EasingStyle.Sine, 0.15, true)
         Label.TextColor3 = state and Theme.TextMain or Theme.TextMuted
         callback(state)
     end)
@@ -349,7 +350,6 @@ local function addSlider(parent, icon, text, min, max, default, callback)
             updateSlider(input)
         end
     end)
-
     UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then isSliding = false end
     end)
@@ -361,20 +361,19 @@ local function addSlider(parent, icon, text, min, max, default, callback)
 end
 
 -- ====================================================================
--- 4. LOGIC CHỨC NĂNG VÀ ĐỔ DỮ LIỆU LÊN UI
+-- 4. LOGIC CHỨC NĂNG & ĐỔ DỮ LIỆU
 -- ====================================================================
 local TabPlayer = createTab("Player", "Player")
 local TabOptimizer = createTab("Optimizer", "Optimizer")
 local TabMisc = createTab("Misc", "Misc")
-switchTab("Player") -- Default tab
+switchTab("Player") 
 
 -- [TAB PLAYER]
 addSection(TabPlayer, "Player Modifications")
 
 local antiAFKEnabled = false
-addToggle(TabPlayer, "📌", "Anti-AFK", false, function(state)
-    antiAFKEnabled = state
-end)
+addToggle(TabPlayer, "📌", "Anti-AFK", false, function(state) antiAFKEnabled = state end)
+
 LocalPlayer.Idled:Connect(function()
     if antiAFKEnabled then
         VirtualUser:CaptureController()
@@ -463,7 +462,7 @@ addToggle(TabOptimizer, "🗑️", "Xóa Textures Toàn Map", false, function(st
 end)
 
 local BlackoutGui = nil
-addToggle(TabOptimizer, "🛑", "Zen Mode (Chống Lag Load Layout)", false, function(state)
+addToggle(TabOptimizer, "🛑", "Zen Mode (Chống Lag)", false, function(state)
     if state then
         BlackoutGui = Instance.new("ScreenGui")
         BlackoutGui.Name = "AntiAFK_BlackoutGui"
@@ -488,45 +487,60 @@ addToggle(TabOptimizer, "🛑", "Zen Mode (Chống Lag Load Layout)", false, fun
     end
 end)
 
--- [TAB MISC - AUTO KEYS]
+-- [TAB MISC - TÁCH RIÊNG AUTO KEYS]
 addSection(TabMisc, "Automation Macros")
 
-local autoKeyEnabled = false
-addToggle(TabMisc, "⌨️", "Auto Bấm Phím 1 -> 5", false, function(state)
-    autoKeyEnabled = state
-end)
+-- Mảng lưu trạng thái bật/tắt của từng phím
+local autoKeyStates = {
+    [1] = false,
+    [2] = false,
+    [3] = false,
+    [4] = false,
+    [5] = false
+}
 
--- Vòng lặp chạy Auto Phím
+-- Mảng chứa mã Enum Key tương ứng
+local keyEnums = {
+    [1] = Enum.KeyCode.One,
+    [2] = Enum.KeyCode.Two,
+    [3] = Enum.KeyCode.Three,
+    [4] = Enum.KeyCode.Four,
+    [5] = Enum.KeyCode.Five
+}
+
+-- Vòng lặp tạo 5 Toggle riêng biệt
+for i = 1, 5 do
+    addToggle(TabMisc, "⌨️", "Auto Bấm Phím " .. i, false, function(state)
+        autoKeyStates[i] = state
+    end)
+end
+
+-- Cơ chế chạy Auto Bấm Phím độc lập
 task.spawn(function()
-    -- Các phím từ 1 đến 5 theo Enum của Roblox
-    local keysToPress = {
-        Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four, Enum.KeyCode.Five
-    }
-    
     while true do
-        task.wait(0.5) -- Khoảng nghỉ giữa mỗi chu kỳ bấm 1-5
+        task.wait(0.1) -- Tốc độ quét (0.1 giây/lần)
         
-        -- Nếu đang bật và người chơi KHÔNG GÕ CHAT
-        if autoKeyEnabled and not UserInputService:GetFocusedTextBox() then
-            for i = 1, #keysToPress do
-                if not autoKeyEnabled then break end -- Dừng ngay nếu lỡ tắt giữa chừng
-                
-                -- Giả lập bấm phím xuống
-                VirtualInputManager:SendKeyEvent(true, keysToPress[i], false, game)
-                task.wait(0.05)
-                -- Giả lập thả phím ra
-                VirtualInputManager:SendKeyEvent(false, keysToPress[i], false, game)
-                task.wait(0.05)
+        -- Nếu người chơi KHÔNG gõ chữ vào khung Chat thì mới chạy macro
+        if not UserInputService:GetFocusedTextBox() then
+            for i = 1, 5 do
+                if autoKeyStates[i] then
+                    -- Bấm phím xuống
+                    VirtualInputManager:SendKeyEvent(true, keyEnums[i], false, game)
+                    task.wait(0.05)
+                    -- Thả phím lên
+                    VirtualInputManager:SendKeyEvent(false, keyEnums[i], false, game)
+                    task.wait(0.05) -- Nghỉ ngắn để game kịp nhận diện
+                end
             end
         end
     end
 end)
 
--- Ẩn Hiện GUI bằng phím Q
+-- Ẩn / Hiện UI
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if not gameProcessed and input.KeyCode == Enum.KeyCode.Q then
         MainFrame.Visible = not MainFrame.Visible
     end
 end)
 
-print("🤖 [System V5.0]: Loaded Successfully!")
+print("🤖 [System V5.1]: Loaded Successfully - Fixed UI & Auto Keys!")
