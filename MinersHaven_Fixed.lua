@@ -83,8 +83,50 @@ local function findRemote(name)
     return nil
 end
 
+-- New game networking: most commands go through Jolt channels (Fire / Invoke)
+local JOLT_METHODS = {
+    Rebirth    = "Invoke",   -- game: Rebirth:Invoke()
+    DestroyAll = "Invoke",   -- game: DestroyAll:Invoke()
+    RemoteDrop = "Fire",     -- game: RemoteDrop:Fire()
+    Pulse      = "Fire",     -- game: Pulse:Fire()
+    MysteryBox = "Invoke",   -- game: MysteryBox:Invoke(boxType)
+}
+
+local Jolt
+do
+    local ok, mod = pcall(function()
+        return require(RS:WaitForChild("Modules", 10).Networking.Jolt)
+    end)
+    if ok and type(mod) == "table" and type(mod.Client) == "function" then
+        Jolt = mod
+    else
+        warn("[MH] Could not load Jolt module:", mod)
+    end
+end
+
+local joltChannels = {}
+local function joltChannel(name)
+    if not Jolt then return nil end
+    local ch = joltChannels[name]
+    if not ch then
+        local ok, res = pcall(Jolt.Client, name)
+        if ok then
+            ch = res
+            joltChannels[name] = ch
+        end
+    end
+    return ch
+end
+
 local warnedRemote = {}
 local function callRemote(name, ...)
+    local method = JOLT_METHODS[name]
+    if method then
+        local ch = joltChannel(name)
+        if ch then
+            return pcall(ch[method], ch, ...)
+        end
+    end
     local r = findRemote(name)
     if not r then
         if not warnedRemote[name] then
@@ -170,7 +212,7 @@ local Window = Rayfield:CreateWindow({
     LoadingTitle = "MH by Vendios",
     LoadingSubtitle = "Rayfield",
     ConfigurationSaving = {
-        Enabled = true,
+        Enabled = false,  -- true = remember toggles, but they auto-start on inject
         FolderName = "MinersHavenVendios",
         FileName = "Config",
     },
@@ -235,12 +277,12 @@ for i = 1, 3 do
 end
 
 MainTab:CreateToggle({
-    Name = "Auto Rebirth (26)",
+    Name = "Auto Rebirth",
     CurrentValue = false,
     Flag = "AutoRebirth",
     Callback = function(state)
         setLoop("mainRebirth", state, 0.01, function()
-            callRemote("Rebirth", 26)
+            callRemote("Rebirth")
         end)
     end,
 })
@@ -413,13 +455,13 @@ SettingsTab:CreateDropdown({
 })
 
 SettingsTab:CreateToggle({
-    Name = "Auto Rebirth (by threshold)",
+    Name = "Auto Rebirth (by cash threshold)",
     CurrentValue = false,
     Flag = "AutoRebirthToggle",
     Callback = function(state)
         setLoop("thresholdRebirth", state, 0.05, function()
             if getMoney() >= rebirthThreshold then
-                callRemote("Rebirth", 1)
+                callRemote("Rebirth")
             end
         end)
     end,
@@ -434,6 +476,8 @@ local function diagnose()
         local r = findRemote(n)
         if r then
             print("[MH] found remote:", r:GetFullName(), r.ClassName)
+        elseif JOLT_METHODS[n] and joltChannel(n) then
+            print("[MH] Jolt channel OK:", n, JOLT_METHODS[n])
         else
             missing[#missing + 1] = "Remote: " .. n
         end
