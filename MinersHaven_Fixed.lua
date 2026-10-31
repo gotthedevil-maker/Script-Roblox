@@ -62,9 +62,30 @@ local function setLoop(key, enabled, interval, fn)
     end)
 end
 
+local remoteCache = {}
+local function findRemote(name)
+    local cached = remoteCache[name]
+    if cached and cached.Parent then return cached end
+    local function search(root)
+        if not root then return nil end
+        for _, d in ipairs(root:GetDescendants()) do
+            if d.Name == name and (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) then
+                return d
+            end
+        end
+    end
+    -- new game layout: ReplicatedStorage.Remotes.<Category>.<Name>; fall back to old layout
+    local r = search(RS:FindFirstChild("Remotes")) or RS:FindFirstChild(name)
+    if r and (r:IsA("RemoteEvent") or r:IsA("RemoteFunction")) then
+        remoteCache[name] = r
+        return r
+    end
+    return nil
+end
+
 local warnedRemote = {}
 local function callRemote(name, ...)
-    local r = RS:FindFirstChild(name)
+    local r = findRemote(name)
     if not r then
         if not warnedRemote[name] then
             warnedRemote[name] = true
@@ -410,7 +431,12 @@ SettingsTab:CreateToggle({
 local function diagnose()
     local missing = {}
     for _, n in ipairs({ "Layouts", "DestroyAll", "Rebirth", "RemoteDrop", "MysteryBox", "Pulse" }) do
-        if not RS:FindFirstChild(n) then missing[#missing + 1] = "ReplicatedStorage." .. n end
+        local r = findRemote(n)
+        if r then
+            print("[MH] found remote:", r:GetFullName(), r.ClassName)
+        else
+            missing[#missing + 1] = "Remote: " .. n
+        end
     end
     for _, n in ipairs({ "Tycoons", "DroppedParts", "Boxes", "Map" }) do
         if not workspace:FindFirstChild(n) then missing[#missing + 1] = "workspace." .. n end
