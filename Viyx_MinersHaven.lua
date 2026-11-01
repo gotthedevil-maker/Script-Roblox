@@ -843,7 +843,7 @@ do
         layoutString = "", layoutExpected = 0, layoutLoading = false, rebirthing = false,
         -- ore boost
         oreBoost = false, oreBoostActive = false, loopCount = 1, useIndMine = false,
-        useMoneyLoop = false, farmRP = false, primaryFurnace = "Auto", selectedMines = {}, oreCap = 1e250,
+        useMoneyLoop = false, farmRP = false, primaryFurnace = "Auto", selectedMines = {}, oreCap = 1e250, maxWorkers = 6,
         oreSize = 0, upgraderSize = 1, autoResize = false, singleItem = "", autoPrompts = false,
         -- trackers
         trackOres = false, trackBoxes = false,
@@ -1422,18 +1422,37 @@ do
         end
     end
 
-    -- Limit concurrent boosts so a fast mine cannot spawn hundreds of threads
+    -- Worker pool: at most B.maxWorkers ores are boosted at once. Ores that arrive
+    -- while every worker is busy wait in a queue instead of being skipped.
     local activeBoost, activeCount = {}, 0
+    local boostQueue = {}
     local function startOreBoost(ore, selectedMode)
-        local maxWorkers = selectedMode and 8 or 2
         if not (Hub.Alive and ore and ore.Parent) then return end
-        if activeBoost[ore] or activeCount >= maxWorkers then return end
-        activeBoost[ore] = true
+        if activeBoost[ore] then return end
+        if activeCount >= B.maxWorkers then
+            if #boostQueue < 80 then boostQueue[#boostQueue + 1] = ore end
+            return
+        end
         activeCount = activeCount + 1
-        local ok, err = pcall(runOreBoost, ore)
-        activeBoost[ore] = nil
+        local current = ore
+        while current do
+            if current.Parent and not activeBoost[current] then
+                activeBoost[current] = true
+                local ok, err = pcall(runOreBoost, current)
+                activeBoost[current] = nil
+                if not ok then warn("[MH] ore boost error:", err) end
+            end
+            current = nil
+            if not (Hub.Alive and B.oreBoost) then
+                table.clear(boostQueue)
+                break
+            end
+            while #boostQueue > 0 do
+                local nextOre = table.remove(boostQueue, 1)
+                if nextOre.Parent then current = nextOre; break end
+            end
+        end
         activeCount = math.max(0, activeCount - 1)
-        if not ok then warn("[MH] ore boost error:", err) end
     end
 
     -- Which mine did this ore come from? (only used for "Mines to boost")
@@ -2361,6 +2380,15 @@ do
         CurrentValue = 1,
         Flag = "VxLoopCount",
         Callback = function(v) B.loopCount = v end,
+    })
+    BoostTab:CreateSlider({
+        Name = "Ores boosted at the same time",
+        Range = { 1, 20 },
+        Increment = 1,
+        Suffix = "ores",
+        CurrentValue = 6,
+        Flag = "VxMaxWorkers",
+        Callback = function(v) B.maxWorkers = v end,
     })
     BoostTab:CreateToggle({
         Name = "Using Industrial Mine (fuel ores)",
