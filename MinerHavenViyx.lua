@@ -16,10 +16,39 @@ local VirtualUser         = game:GetService("VirtualUser")
 local LocalPlayer         = Players.LocalPlayer or Players.PlayerAdded:Wait()
 
 ----------------------------------------------------------------------
+-- Hub: lets you inject the script again without duplicate loops/menus
+----------------------------------------------------------------------
+local ENV = (getgenv and getgenv()) or _G
+local HUB_KEY = "Viyx_MinersHavenHub"
+if type(ENV[HUB_KEY]) == "table" and type(ENV[HUB_KEY].Unload) == "function" then
+    pcall(ENV[HUB_KEY].Unload)
+    task.wait(0.2)
+end
+local Hub = { Alive = true, Cleanups = {}, Conns = {} }
+ENV[HUB_KEY] = Hub
+
+local function connect(signal, fn)
+    local c = signal:Connect(fn)
+    table.insert(Hub.Conns, c)
+    return c
+end
+
+local function httpGet(url)
+    local ok, body = pcall(function() return game:HttpGet(url) end)
+    if ok and type(body) == "string" and #body > 0 then return body end
+    local req = request or http_request or (syn and syn.request)
+    if req then
+        local okReq, res = pcall(req, { Url = url, Method = "GET" })
+        if okReq and type(res) == "table" and type(res.Body) == "string" then return res.Body end
+    end
+    error("HTTP request failed for " .. url)
+end
+
+----------------------------------------------------------------------
 -- Load Rayfield
 ----------------------------------------------------------------------
 local okLib, Rayfield = pcall(function()
-    return loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+    return loadstring(httpGet("https://sirius.menu/rayfield"))()
 end)
 if not okLib or type(Rayfield) ~= "table" then
     warn("[MH] Could not load Rayfield. Your executor may block HttpGet/loadstring:", Rayfield)
@@ -35,7 +64,7 @@ end
 ----------------------------------------------------------------------
 -- Anti-AFK
 ----------------------------------------------------------------------
-LocalPlayer.Idled:Connect(function()
+connect(LocalPlayer.Idled, function()
     pcall(function()
         local cam = workspace.CurrentCamera
         VirtualUser:Button2Down(Vector2.new(0, 0), cam and cam.CFrame or CFrame.new())
@@ -91,6 +120,9 @@ local JOLT_METHODS = {
     Pulse      = "Fire",     -- game: Pulse:Fire()
     MysteryBox = "Invoke",   -- game: MysteryBox:Invoke(boxType)
     PlaySolo   = "Invoke",   -- old script: PlaySolo:InvokeServer(islandType)
+    BuyItem    = "Invoke",   -- game: BuyItem:Invoke(itemId, amount)
+    PlaceItem  = "Invoke",   -- game: PlaceItem:Invoke(itemId, cframe + base.Position, {base})
+    CraftsmanEvents = "Invoke", -- game: CraftsmanEvents:Invoke("type:hasblueprint", id)
 }
 
 local Jolt
@@ -584,8 +616,8 @@ FactoryTab:CreateToggle({
     Callback = function(state) boostEnabled = state end,
 })
 
-RunService.Heartbeat:Connect(function()
-    if not boostEnabled then return end
+connect(RunService.Heartbeat, function()
+    if not Hub.Alive or not boostEnabled then return end
     local dropped = workspace:FindFirstChild("DroppedParts")
     if not dropped then return end
     for _, factory in ipairs(dropped:GetChildren()) do
@@ -633,7 +665,7 @@ task.spawn(function()
     print("[MH] Found factory:", myFactory.Name)
     local adj = myFactory:WaitForChild("AdjustSpeed", 15)
     if not adj then warn("[MH] AdjustSpeed not found in factory"); return end
-    while true do
+    while Hub.Alive do
         if not adj.Parent then adj = myFactory:FindFirstChild("AdjustSpeed") end
         if adj and lockEnabled and adj.Value ~= lockedValue then
             adj.Value = lockedValue
@@ -797,18 +829,29 @@ EspTab:CreateToggle({
 ----------------------------------------------------------------------
 do
     local TeleportService = game:GetService("TeleportService")
+    local SoundService    = game:GetService("SoundService")
+    local HttpService     = game:GetService("HttpService")
+    local Lighting        = game:GetService("Lighting")
 
     ------------------------------------------------------------------
     -- Shared state
     ------------------------------------------------------------------
     local B = {
-        layout1 = "Layout1", layout2 = "None", layoutWait = 10, withdraw = false,
-        autoRebirth = false, minWait = 20, randomness = false, skips = 0, stopLife = 0,
-        oreBoost = false, oreBoostActive = false, loopCount = 1,
-        useIndMine = false, useMoneyLoop = false, farmRP = false,
-        oreSize = 0, upgraderSize = 1, autoResize = false, singleItem = "",
-        trackOres = false, trackBoxes = false, antiLeave = false,
-        walk = 16, jump = 50,
+        -- rebirth + layouts
+        autoRebirth = false, minWait = 7, maxWait = 20, skips = 0, stopLife = 0, stopSlip = "None",
+        ghostLoad = false, layout1 = "Layout1", layout2 = "None", layoutWait = 10, withdraw = false,
+        layoutString = "", layoutExpected = 0, layoutLoading = false, rebirthing = false,
+        -- ore boost
+        oreBoost = false, oreBoostActive = false, loopCount = 1, useIndMine = false,
+        useMoneyLoop = false, farmRP = false, primaryFurnace = "Auto", selectedMines = {},
+        oreSize = 0, upgraderSize = 1, autoResize = false, singleItem = "", autoPrompts = false,
+        -- trackers
+        trackOres = false, trackBoxes = false,
+        -- boxes
+        farmBoxes = false, boxSpeed = 30, safetyTeleport = false, candyConfirm = false,
+        selectedBox = "Regular", boxWait = 1,
+        -- misc
+        antiLeave = false, walk = 16, jump = 50,
     }
     local V = { furnace = nil, indMine = nil }
     local boostStatus, rebirthToggle, oreBoostToggle
@@ -838,7 +881,8 @@ do
 
     local function showText(text)
         pcall(function()
-            local old = (gethui and gethui() or LocalPlayer:WaitForChild("PlayerGui")):FindFirstChild("ViyxText")
+            local parent = (gethui and gethui()) or LocalPlayer:WaitForChild("PlayerGui")
+            local old = parent:FindFirstChild("ViyxText")
             if old then old:Destroy() end
             local gui = Instance.new("ScreenGui")
             gui.Name = "ViyxText"
@@ -865,7 +909,7 @@ do
             close.TextColor3 = Color3.new(1, 1, 1)
             close.Parent = gui
             close.MouseButton1Click:Connect(function() gui:Destroy() end)
-            gui.Parent = (gethui and gethui()) or LocalPlayer:WaitForChild("PlayerGui")
+            gui.Parent = parent
             if setclipboard then pcall(setclipboard, text) end
         end)
     end
@@ -886,6 +930,22 @@ do
     local function getRebirthCount()
         local r = LocalPlayer:FindFirstChild("Rebirths")
         return r and r.Value or nil
+    end
+
+    local function teleportToOwnBase()
+        local t = getTycoon()
+        local base = t and t:FindFirstChild("Base")
+        local hrp = getHRP()
+        if not (base and hrp) then return false end
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        hrp.CFrame = base.CFrame + Vector3.new(0, 10, 0)
+        return true
+    end
+
+    local function teleportForLoad()
+        if B.ghostLoad then return false end
+        return teleportToOwnBase()
     end
 
     ------------------------------------------------------------------
@@ -924,11 +984,56 @@ do
     end
 
     ------------------------------------------------------------------
+    -- Items (ids, names)
+    ------------------------------------------------------------------
+    local itemMap
+    local function getItemId(item)
+        if not item then return nil end
+        local a = tonumber(item:GetAttribute("ItemId"))
+        if a then return a end
+        local v = item:FindFirstChild("ItemId")
+        return v and tonumber(v.Value) or nil
+    end
+
+    local function resolveItem(identifier)
+        local items = RS:FindFirstChild("Items")
+        if not items or identifier == nil then return nil end
+        local direct = items:FindFirstChild(tostring(identifier))
+        if direct then return direct end
+        local wanted = tonumber(identifier)
+        if not wanted then return nil end
+        if not itemMap then
+            itemMap = {}
+            for _, it in ipairs(items:GetChildren()) do
+                local id = getItemId(it)
+                if id then itemMap[id] = it end
+            end
+        end
+        return itemMap[wanted]
+    end
+
+    local function isItem(item)
+        return item:FindFirstChild("ItemId") ~= nil or item:GetAttribute("ItemId") ~= nil
+    end
+
+    local function countPlaced()
+        local t = getTycoon()
+        if not t then return 0 end
+        local n = 0
+        for _, v in ipairs(t:GetChildren()) do
+            if isItem(v) then n = n + 1 end
+        end
+        return n
+    end
+
+    ------------------------------------------------------------------
     -- Game data (item names)
     ------------------------------------------------------------------
-    local function ML(cap, effect, minVal, minWait)
-        return { Cap = cap, Effect = effect, MinVal = minVal, MinWait = minWait }
+    local function ML(cap, effect, minVal, minWait, isStar, cooldown)
+        return { Cap = cap, Effect = effect, MinVal = minVal, MinWait = minWait, IsStar = isStar, Cooldown = cooldown }
     end
+    local function STAR(cap) return ML(cap, "Fire", nil, 0.12, true, 1.55) end
+
     local MONEY_LOOPABLES = {
         ["Large Ore Upgrader"] = ML(50e3), ["Solar Large Upgrader"] = ML(50e3),
         ["Precision Refiner"] = ML(1e8, "Fire"), ["Rainbow Upgrader"] = ML(1e8),
@@ -939,15 +1044,11 @@ do
         ["Freon Suppressor"] = ML(100e21), ["Horizon Centrifuge"] = ML(1e24, nil, 1e21),
         ["Ore Thermocrusher"] = ML(100e24), ["Suspended Lava Refiner"] = ML(1e27),
         ["Ore Transistor"] = ML(1e30, nil, 1e24), ["Ore Transponder"] = ML(1e33),
-        ["Morning Star"] = ML(1e30, "Fire", nil, 1.5),
-        ["⭐ Celestial Morning Star ⭐"] = ML(1e30, "Fire", nil, 1.5),
-        ["Red Giant"] = ML(1e60, "Fire", nil, 1.5),
-        ["⭐ Wholesome Red Giant ⭐"] = ML(1e60, "Fire", nil, 1.5),
-        ["Catalyzed Star"] = ML(1e60, "Fire", nil, 1.5),
-        ["Neutron Star"] = ML(1e72, "Fire", nil, 1.5),
-        ["⭐ Wholesome Neutron Star ⭐"] = ML(1e72, "Fire", nil, 1.5),
-        ["Blue Supergiant"] = ML(1e90, "Fire", nil, 1.5),
-        ["⭐ Hypergiant Blue Supergiant ⭐"] = ML(1e90, "Fire", nil, 1.5),
+        ["Morning Star"] = STAR(1e30), ["⭐ Celestial Morning Star ⭐"] = STAR(1e30),
+        ["Red Giant"] = STAR(1e60), ["⭐ Wholesome Red Giant ⭐"] = STAR(1e60),
+        ["Catalyzed Star"] = STAR(1e60), ["Neutron Star"] = STAR(1e72),
+        ["⭐ Wholesome Neutron Star ⭐"] = STAR(1e72), ["Nova Star"] = STAR(1e72),
+        ["Blue Supergiant"] = STAR(1e90), ["⭐ Hypergiant Blue Supergiant ⭐"] = STAR(1e90),
         ["Sinister Sepulcher"] = ML(1e99), ["Renegade Sinister Sepulcher"] = ML(1e99),
         ["⭐ Ornate Sinister Sepulcher ⭐"] = ML(1e99),
     }
@@ -964,56 +1065,171 @@ do
     local EFFECT_REMOVERS = { "Wild Spore", "Deadly Spore", "Azure Spore", "The Death Cap" }
 
     ------------------------------------------------------------------
-    -- Ore boost: teleport each ore through the upgraders, then sell it
+    -- Finding parts on items
     ------------------------------------------------------------------
-    local function upgradePart(item)
-        local model = item and item:FindFirstChild("Model")
-        if not model then return nil end
-        return model:FindFirstChild("Upgrade") or model:FindFirstChild("Upgrader") or model:FindFirstChild("Scan")
+    local function hasTouch(part)
+        return part ~= nil and (part:FindFirstChild("TouchInterest") ~= nil
+            or part:FindFirstChildOfClass("TouchTransmitter") ~= nil)
     end
 
-    local function isItem(item)
-        return item:FindFirstChild("ItemId") ~= nil or item:GetAttribute("ItemId") ~= nil
+    local function toPart(inst)
+        if not inst then return nil end
+        if inst:IsA("BasePart") then return inst end
+        if inst:IsA("Model") or inst:IsA("Folder") or inst:IsA("Configuration") then
+            for _, d in ipairs(inst:GetDescendants()) do
+                if d:IsA("BasePart") and hasTouch(d) then return d end
+            end
+            for _, d in ipairs(inst:GetDescendants()) do
+                if d:IsA("BasePart") then return d end
+            end
+            if inst:IsA("Model") then return inst.PrimaryPart end
+        end
+        return nil
+    end
+
+    local UPGRADE_NAMES = { "Upgrade", "Upgrader", "Scan", "UpgraderPart" }
+    local function upgradePart(item)
+        if not item then return nil end
+        for _, n in ipairs(UPGRADE_NAMES) do
+            local part = toPart(item:FindFirstChild(n, true))
+            if part and hasTouch(part) then return part end
+        end
+        for _, n in ipairs(UPGRADE_NAMES) do
+            local part = toPart(item:FindFirstChild(n, true))
+            if part then return part end
+        end
+        for _, d in ipairs(item:GetDescendants()) do
+            if d:IsA("BasePart") and hasTouch(d) then
+                local n = d.Name:lower()
+                if n:find("upgrade", 1, true) or n:find("scan", 1, true)
+                    or n:find("refine", 1, true) or n:find("advanc", 1, true) then
+                    return d
+                end
+            end
+        end
+        if item:FindFirstChild("UpgraderShip", true) then
+            for _, d in ipairs(item:GetDescendants()) do
+                if d:IsA("BasePart") and hasTouch(d) then
+                    local n = d.Name:lower()
+                    if not n:find("lava", 1, true) and n ~= "hitbox" and n ~= "base" and n ~= "plane" then
+                        return d
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    local LAVA_NAMES = { "Lava", "Lava1", "MiniLava", "Lava2" }
+    local function lavaPart(item)
+        if not item or not item.Parent then return nil end
+        local model = item:FindFirstChild("Model") or item
+        for _, n in ipairs(LAVA_NAMES) do
+            local p = model:FindFirstChild(n, true)
+            if p and p:IsA("BasePart") and not p:FindFirstChild("TeleportSend") then return p end
+        end
+        for _, d in ipairs(model:GetDescendants()) do
+            if d:IsA("BasePart") and d.Name:lower():find("lava", 1, true) and not d:FindFirstChild("TeleportSend") then
+                return d
+            end
+        end
+        return nil
+    end
+
+    local function isFurnace(item)
+        if not item or not item.Parent then return false end
+        local model = item:FindFirstChild("Model")
+        local hasMoney = item:FindFirstChild("MoneyScript", true) ~= nil
+        if not model and not hasMoney then return false end
+        local lava = lavaPart(item)
+        if lava and lava:FindFirstChild("TeleportSend") then return false end
+        if hasMoney then return true end
+        return lava ~= nil and model ~= nil and model:FindFirstChild("Drop", true) == nil
+    end
+
+    local function isMine(item)
+        local model = item and item:FindFirstChild("Model")
+        return model ~= nil and model:FindFirstChild("Drop", true) ~= nil
     end
 
     local function refreshFurnace()
         local t = getTycoon()
-        if not t then return end
-        local f = V.furnace
-        if not (f and f.Parent and f:FindFirstChild("Model") and f.Model:FindFirstChild("Lava")) then V.furnace = nil end
-        local m = V.indMine
-        if not (m and m.Parent and m:FindFirstChild("Model")) then V.indMine = nil end
+        if not t then return nil end
+        local pref = B.primaryFurnace
+        if pref and pref ~= "" and pref ~= "Auto" then
+            local f = t:FindFirstChild(pref)
+            if isFurnace(f) then V.furnace = f end
+        end
         for _, item in ipairs(t:GetChildren()) do
-            local model = item:FindFirstChild("Model")
-            local lava = model and model:FindFirstChild("Lava")
-            if lava and not lava:FindFirstChild("TeleportSend") then
-                if model:FindFirstChild("Drop") then
-                    V.indMine = V.indMine or item
-                elseif not item:FindFirstChild("Upgrade") then
-                    V.furnace = V.furnace or item
+            if isFurnace(item) and not isFurnace(V.furnace) then V.furnace = item end
+            if isMine(item) and not (V.indMine and V.indMine.Parent) then V.indMine = item end
+        end
+        return V.furnace
+    end
+
+    local function furnaceNames()
+        local list, seen = { "Auto" }, { Auto = true }
+        local t = getTycoon()
+        if t then
+            for _, v in ipairs(t:GetChildren()) do
+                if isFurnace(v) and not seen[v.Name] then
+                    seen[v.Name] = true
+                    list[#list + 1] = v.Name
                 end
             end
         end
+        return list
     end
 
-    local function lavaOf(item)
-        local model = item and item.Parent and item:FindFirstChild("Model")
-        return model and model:FindFirstChild("Lava")
+    local function mineNames()
+        local list, seen = {}, {}
+        local t = getTycoon()
+        if t then
+            for _, v in ipairs(t:GetChildren()) do
+                if isMine(v) and not seen[v.Name] then
+                    seen[v.Name] = true
+                    list[#list + 1] = v.Name
+                end
+            end
+        end
+        return list
     end
 
     local function sellOre(ore)
-        if not lavaOf(V.furnace) then refreshFurnace() end
-        local lava = lavaOf(V.furnace)
-        if lava and ore and ore.Parent then
-            ore.CFrame = lava.CFrame + Vector3.new(0, 1, 0)
+        if not (ore and ore.Parent) then return end
+        local furn
+        local pref = B.primaryFurnace
+        if pref and pref ~= "" and pref ~= "Auto" then
+            local t = getTycoon()
+            local f = t and t:FindFirstChild(pref)
+            if isFurnace(f) then furn = f end
         end
+        if not furn then
+            if not isFurnace(V.furnace) then refreshFurnace() end
+            furn = V.furnace
+        end
+        V.furnace = furn or V.furnace
+        local lava = furn and lavaPart(furn)
+        if lava then ore.CFrame = lava.CFrame + Vector3.new(0, 1, 0) end
     end
 
-    local function sendThrough(ore, part)
-        for _ = 1, B.loopCount do
-            if not (ore.Parent and part.Parent and B.oreBoostActive) then return end
-            ore.CFrame = part.CFrame
-            task.wait(0.01)
+    ------------------------------------------------------------------
+    -- Ore boost: teleport each ore through the upgraders, then sell it
+    ------------------------------------------------------------------
+    local function runThrough(ore, part)
+        part = toPart(part)
+        if not (ore and part) then return end
+        for _ = 1, math.max(1, B.loopCount) do
+            if not (Hub.Alive and B.oreBoostActive and ore.Parent and part.Parent) then break end
+            pcall(function()
+                ore.Anchored = true
+                ore.AssemblyLinearVelocity = Vector3.zero
+                ore.AssemblyAngularVelocity = Vector3.zero
+                ore.CFrame = part.CFrame + Vector3.new(0, 0.5, 0)
+            end)
+            task.wait(0.008)
+            pcall(function() ore.Anchored = false end)
+            task.wait(0.004)
         end
     end
 
@@ -1021,11 +1237,22 @@ do
         local t = getTycoon()
         if not t then return end
         for _, item in ipairs(t:GetChildren()) do
-            if not (B.oreBoostActive and ore.Parent) then return end
-            if not MONEY_LOOPABLES[item.Name] and not RESETTER_SET[item.Name]
-                and item:FindFirstChild("Plane") and isItem(item) then
+            if not (Hub.Alive and B.oreBoostActive and ore.Parent) then return end
+            if not RESETTER_SET[item.Name] and not (B.useMoneyLoop and MONEY_LOOPABLES[item.Name]) then
                 local part = upgradePart(item)
-                if part then sendThrough(ore, part) end
+                if part then
+                    runThrough(ore, part)
+                elseif isFurnace(item) then
+                    local pref = B.primaryFurnace
+                    local auto = (not pref or pref == "" or pref == "Auto")
+                    if auto and not isFurnace(V.furnace) then
+                        V.furnace = item
+                    elseif not auto and item.Name == pref then
+                        V.furnace = item
+                    end
+                elseif isMine(item) and not (V.indMine and V.indMine.Parent) then
+                    V.indMine = item
+                end
             end
         end
     end
@@ -1035,7 +1262,7 @@ do
         if not t then return end
         boostOre(ore)
         for _, group in ipairs(RESET_GROUPS) do
-            if not (B.oreBoostActive and ore.Parent) then return end
+            if not (Hub.Alive and B.oreBoostActive and ore.Parent) then return end
             local item
             for _, n in ipairs(group) do
                 item = t:FindFirstChild(n)
@@ -1043,52 +1270,131 @@ do
             end
             local part = item and upgradePart(item)
             if part then
-                sendThrough(ore, part)
+                runThrough(ore, part)
                 boostOre(ore)
             end
         end
     end
 
-    local function moneyLoop(ore)
-        local t = getTycoon()
-        if not t then return end
-        local bestItem, bestInfo
-        for name, info in pairs(MONEY_LOOPABLES) do
-            local it = t:FindFirstChild(name)
-            if it and it:FindFirstChild("Model") and (not bestInfo or info.Cap > bestInfo.Cap) then
-                bestItem, bestInfo = it, info
-            end
-        end
-        if not bestItem then return end
-        local part = upgradePart(bestItem)
-        local cash = ore:FindFirstChild("Cash")
-        if not part or not cash then return end
-        if bestInfo.MinVal and cash.Value < bestInfo.MinVal then return end
+    local function hitPart(ore, part, wait)
+        if not (ore and part and part.Parent) then return end
+        pcall(function()
+            ore.Anchored = true
+            ore.AssemblyLinearVelocity = Vector3.zero
+            ore.AssemblyAngularVelocity = Vector3.zero
+            ore.CFrame = part.CFrame + Vector3.new(0, 0.5, 0)
+        end)
+        task.wait(wait or 0.1)
+        pcall(function() if ore.Parent then ore.Anchored = false end end)
+    end
 
-        local protectPart
+    local function protectPartOf(t)
         for _, n in ipairs(EFFECT_REMOVERS) do
-            local p = t:FindFirstChild(n)
-            if p then protectPart = upgradePart(p); break end
-        end
-
-        local started = os.clock()
-        while B.oreBoost and B.oreBoostActive and ore.Parent and bestItem.Parent and cash.Parent
-            and cash.Value < bestInfo.Cap and os.clock() - started < 60 do
-            for _ = 1, B.loopCount do
-                if not (ore.Parent and part.Parent) then break end
-                ore.CFrame = part.CFrame
-                task.wait(bestInfo.MinWait or 0.01)
-                if bestInfo.Effect and protectPart then ore.CFrame = protectPart.CFrame end
+            local item = t:FindFirstChild(n)
+            if item then
+                local p = upgradePart(item)
+                if p then return p end
             end
-            task.wait(0.05)
+        end
+        return nil
+    end
+
+    local function moneyLoopActive(ore)
+        return Hub.Alive and B.oreBoost and B.oreBoostActive and B.useMoneyLoop and ore.Parent
+    end
+
+    local function starLoop(ore, stars, protect)
+        local cap = 0
+        for _, s in ipairs(stars) do
+            if s.Info.Cap and s.Info.Cap > cap then cap = s.Info.Cap end
+        end
+        if cap <= 0 then cap = 1e30 end
+        local started = os.clock()
+        while moneyLoopActive(ore) and os.clock() - started < 120 do
+            local cash = ore:FindFirstChild("Cash")
+            if not cash or cash.Value <= 0 or cash.Value >= cap then break end
+            local hits = 0
+            for _, s in ipairs(stars) do
+                if not moneyLoopActive(ore) then break end
+                cash = ore:FindFirstChild("Cash")
+                if not cash or cash.Value <= 0 or cash.Value >= cap then break end
+                if s.Item.Parent then
+                    if not (s.Part and s.Part.Parent) then s.Part = upgradePart(s.Item) end
+                    if s.Part then
+                        local need = (s.LastHit + (s.Info.Cooldown or 1.55)) - os.clock()
+                        if need > 0 then task.wait(need) end
+                        if ore.Parent and s.Part.Parent then
+                            hitPart(ore, s.Part, s.Info.MinWait or 0.12)
+                            s.LastHit = os.clock()
+                            hits = hits + 1
+                            if s.Info.Effect and protect and protect.Parent and ore.Parent then
+                                pcall(function() ore.CFrame = protect.CFrame + Vector3.new(0, 0.5, 0) end)
+                                task.wait(0.06)
+                            end
+                        end
+                    end
+                end
+            end
+            if hits == 0 then break end
         end
     end
 
-    local function startOreBoost(ore)
+    local function normalLoop(ore, entries, protect)
+        table.sort(entries, function(a, b) return (a.Info.Cap or 0) > (b.Info.Cap or 0) end)
+        local info = entries[1].Info
+        local cap = info.Cap or 1e30
+        local started = os.clock()
+        while moneyLoopActive(ore) and os.clock() - started < 120 do
+            local cash = ore:FindFirstChild("Cash")
+            if not cash or cash.Value <= 0 or cash.Value >= cap then break end
+            if info.MinVal and cash.Value < info.MinVal then break end
+            for _, e in ipairs(entries) do
+                if not ore.Parent then break end
+                cash = ore:FindFirstChild("Cash")
+                if not cash or cash.Value >= cap then break end
+                if not (e.Part and e.Part.Parent) then e.Part = upgradePart(e.Item) end
+                if e.Part then
+                    for _ = 1, math.max(1, B.loopCount) do
+                        hitPart(ore, e.Part, info.MinWait or 0.01)
+                        if info.Effect and protect then
+                            pcall(function() ore.CFrame = protect.CFrame end)
+                            task.wait(0.03)
+                        end
+                    end
+                end
+            end
+            task.wait(0.02)
+        end
+    end
+
+    local function runMoneyLoops(ore)
+        local t = getTycoon()
+        if not t then return end
+        local stars, normals = {}, {}
+        for name, info in pairs(MONEY_LOOPABLES) do
+            for _, child in ipairs(t:GetChildren()) do
+                if child.Name == name then
+                    local part = upgradePart(child)
+                    if part then
+                        local entry = { Item = child, Info = info, Part = part, LastHit = 0 }
+                        if info.IsStar then stars[#stars + 1] = entry else normals[#normals + 1] = entry end
+                    end
+                end
+            end
+        end
+        local protect = protectPartOf(t)
+        if #stars > 0 then
+            starLoop(ore, stars, protect)
+        elseif #normals > 0 then
+            normalLoop(ore, normals, protect)
+        end
+    end
+
+    local function runOreBoost(ore)
         local cash = ore:WaitForChild("Cash", 5)
-        if not cash then return end
+        if not (Hub.Alive and cash and ore.Parent) then return end
         if cash.Value <= 0 then ore.Anchored = false; return end
-        if B.useMoneyLoop then moneyLoop(ore) end
+        if B.useMoneyLoop then runMoneyLoops(ore) end
         if B.oreBoostActive and ore.Parent then resetOre(ore) end
         if ore.Parent then
             ore.AssemblyAngularVelocity = Vector3.zero
@@ -1097,10 +1403,69 @@ do
         end
     end
 
+    -- Limit concurrent boosts so a fast mine cannot spawn hundreds of threads
+    local activeBoost, activeCount = {}, 0
+    local function startOreBoost(ore, selectedMode)
+        local maxWorkers = selectedMode and 8 or 2
+        if not (Hub.Alive and ore and ore.Parent) then return end
+        if activeBoost[ore] or activeCount >= maxWorkers then return end
+        activeBoost[ore] = true
+        activeCount = activeCount + 1
+        local ok, err = pcall(runOreBoost, ore)
+        activeBoost[ore] = nil
+        activeCount = math.max(0, activeCount - 1)
+        if not ok then warn("[MH] ore boost error:", err) end
+    end
+
+    -- Which mine did this ore come from? (only used for "Mines to boost")
+    local mineCache = setmetatable({}, { __mode = "k" })
+    local function identifyMine(ore)
+        local cached = mineCache[ore]
+        if cached ~= nil then return cached or nil end
+        local result
+        for _, n in ipairs({ "Source", "Mine", "Origin", "DroppedFrom", "From" }) do
+            local c = ore:FindFirstChild(n)
+            if c then
+                if c:IsA("ObjectValue") and c.Value then result = c.Value.Name; break end
+                if c:IsA("StringValue") and c.Value ~= "" then result = c.Value; break end
+            end
+        end
+        if not result then
+            local a = ore:GetAttribute("Mine") or ore:GetAttribute("Source") or ore:GetAttribute("Origin")
+            if a and tostring(a) ~= "" then result = tostring(a) end
+        end
+        if not result then
+            local t = getTycoon()
+            local best, bestDist = nil, 30
+            if t and ore:IsA("BasePart") then
+                for _, v in ipairs(t:GetChildren()) do
+                    if isMine(v) then
+                        local drop = v.Model:FindFirstChild("Drop", true)
+                        if drop and drop:IsA("BasePart") then
+                            local d = (drop.Position - ore.Position).Magnitude
+                            if d < bestDist then bestDist, best = d, v.Name end
+                        end
+                    end
+                end
+            end
+            result = best
+        end
+        mineCache[ore] = result or false
+        return result
+    end
+
+    local function shouldBoostOre(ore)
+        if next(B.selectedMines) then
+            return B.selectedMines[identifyMine(ore)] == true, true
+        end
+        return true, false
+    end
+
     ------------------------------------------------------------------
-    -- Trackers (ore value / boxes)
+    -- Trackers (ore value / boxes), capped so they cannot lag the game
     ------------------------------------------------------------------
     local oreTags, boxTags = {}, {}
+    local oreTagCount, boxTagCount = 0, 0
 
     local function makeTag(text)
         local gui = Instance.new("BillboardGui")
@@ -1121,25 +1486,41 @@ do
     end
 
     local function addOreTag(ore)
-        if oreTags[ore] then return end
+        if oreTags[ore] or oreTagCount >= 50 then return end
         oreTags[ore] = true
+        oreTagCount = oreTagCount + 1
         task.spawn(function()
             local cash = ore:WaitForChild("Cash", 5)
-            if not cash or not ore.Parent or not B.trackOres then oreTags[ore] = nil; return end
+            if not (cash and ore.Parent and B.trackOres) then
+                if oreTags[ore] then oreTags[ore] = nil; oreTagCount = math.max(0, oreTagCount - 1) end
+                return
+            end
             local gui, label = makeTag("$" .. shorten(cash.Value))
             gui.Adornee = ore
             gui.Parent = ore
             oreTags[ore] = gui
             local conn = cash.Changed:Connect(function() label.Text = "$" .. shorten(cash.Value) end)
-            ore.Destroying:Connect(function() conn:Disconnect(); oreTags[ore] = nil end)
+            ore.Destroying:Connect(function()
+                conn:Disconnect()
+                if oreTags[ore] then oreTags[ore] = nil; oreTagCount = math.max(0, oreTagCount - 1) end
+            end)
         end)
     end
 
-    local function clearTags(tags)
-        for k, gui in pairs(tags) do
+    local function clearOreTags()
+        for ore, gui in pairs(oreTags) do
             if typeof(gui) == "Instance" then gui:Destroy() end
-            tags[k] = nil
+            oreTags[ore] = nil
         end
+        oreTagCount = 0
+    end
+
+    local function clearBoxTags()
+        for box, gui in pairs(boxTags) do
+            if typeof(gui) == "Instance" then gui:Destroy() end
+            boxTags[box] = nil
+        end
+        boxTagCount = 0
     end
 
     local function boxAdornee(box)
@@ -1157,11 +1538,12 @@ do
         if B.oreBoost then
             if B.useIndMine and ore:FindFirstChild("Fuel") then
                 refreshFurnace()
-                local lava = lavaOf(V.indMine)
+                local lava = lavaPart(V.indMine)
                 if lava then ore.CFrame = lava.CFrame + Vector3.new(0, 1, 0) end
                 return
             end
-            startOreBoost(ore)
+            local should, selectedMode = shouldBoostOre(ore)
+            if should then startOreBoost(ore, selectedMode) end
         elseif B.farmRP then
             sellOre(ore)
         end
@@ -1169,7 +1551,7 @@ do
 
     task.spawn(function()
         local hookedFolder, hookConn
-        while true do
+        while Hub.Alive do
             local folder = getOres()
             if folder ~= hookedFolder then
                 if hookConn then hookConn:Disconnect(); hookConn = nil end
@@ -1177,11 +1559,13 @@ do
                 if folder then
                     refreshFurnace()
                     hookConn = folder.ChildAdded:Connect(function(child)
+                        if not Hub.Alive then return end
                         task.spawn(function()
                             local ok, err = pcall(onOreAdded, child)
                             if not ok then warn("[MH] ore error:", err) end
                         end)
                     end)
+                    table.insert(Hub.Conns, hookConn)
                 end
             end
             task.wait(2)
@@ -1189,12 +1573,11 @@ do
     end)
 
     ------------------------------------------------------------------
-    -- Layouts + auto rebirth cycle
+    -- Item size helpers + kill ores
     ------------------------------------------------------------------
     local function resizeUpgrader(item)
-        local model = item:FindFirstChild("Model")
-        local up = model and model:FindFirstChild("Upgrade")
-        if not up then return end
+        local up = upgradePart(item)
+        if not (up and up:IsA("BasePart")) then return end
         local base = up:FindFirstChild("BaseSize")
         if not base then
             base = Instance.new("Vector3Value")
@@ -1221,36 +1604,240 @@ do
         end
     end
 
-    local function loadLayouts()
-        if B.oreBoost then B.oreBoostActive = true end
-        callRemote("DestroyAll")
-        task.wait(0.3)
-        callRemote("Layouts", "Load", B.layout1)
-        if B.layout2 ~= "None" then
-            task.wait(B.layoutWait)
-            B.oreBoostActive = false
-            task.wait(0.3)
-            if B.withdraw then
-                callRemote("DestroyAll")
-                task.wait(0.3)
+    ------------------------------------------------------------------
+    -- Layout strings (export / import through PlaceItem)
+    ------------------------------------------------------------------
+    local function decodeCFrame(raw)
+        if typeof(raw) == "CFrame" then return raw end
+        local values = {}
+        if type(raw) == "table" then
+            for i = 1, math.min(#raw, 12) do
+                local v = tonumber(raw[i])
+                if not v then return nil end
+                values[#values + 1] = v
             end
-            callRemote("Layouts", "Load", B.layout2)
-            task.wait(0.3)
-            if B.oreBoost then B.oreBoostActive = true end
+        elseif type(raw) == "string" then
+            for token in string.gmatch(raw, "[^,]+") do
+                local clean = token:match("^%s*(.-)%s*$"):gsub("^%(", ""):gsub("%)$", "")
+                local v = tonumber(clean)
+                if not v then return nil end
+                values[#values + 1] = v
+                if #values == 12 then break end
+            end
+        else
+            return nil
         end
-        if B.autoResize then resizeAll() end
+        if #values >= 12 then return CFrame.new(table.unpack(values, 1, 12)) end
+        if #values == 3 then return CFrame.new(values[1], values[2], values[3]) end
+        return nil
     end
 
-    local lastRebirth, nextWait, rebirthBusy = os.time(), 20, false
+    local function placeEntry(identifier, rawPos)
+        local item = resolveItem(identifier)
+        if not item then return false, "item not found: " .. tostring(identifier) end
+        local itemId = getItemId(item)
+        local cf = decodeCFrame(rawPos)
+        local t = getTycoon()
+        local base = t and t:FindFirstChild("Base")
+        if not (itemId and cf and base) then return false, "invalid item, position or base" end
 
-    local function autoRebirthStep()
-        if rebirthBusy then return end
-        local tycoon = getTycoon()
-        local active = LocalPlayer:FindFirstChild("ActiveTycoon")
-        if not (tycoon and active and active.Value == tycoon) then
-            setStatus("Waiting: you are not in your base")
+        local function tryPlace()
+            local ok, placed, code = callRemote("PlaceItem", itemId, cf + base.Position, { base })
+            if ok and placed ~= false and placed ~= nil then return true end
+            return false, tostring(code or placed)
+        end
+
+        local ok, why = tryPlace()
+        if ok then return true end
+        -- not in inventory: buy it once if it is a cash shop item, then retry
+        local itemType, cost = item:FindFirstChild("ItemType"), item:FindFirstChild("Cost")
+        if itemType and cost and itemType.Value >= 1 and itemType.Value < 5 and getMoney() >= cost.Value then
+            callRemote("BuyItem", itemId, 1)
+            ok, why = tryPlace()
+            if ok then return true end
+        end
+        return false, why
+    end
+
+    local function waitSettle(timeout, minItems)
+        local deadline = os.clock() + (timeout or 12)
+        local last, stable = -1, 0
+        while os.clock() < deadline do
+            local c = countPlaced()
+            if c == last and c >= (minItems or 1) then
+                stable = stable + 0.2
+                if stable >= 1 then return c end
+            else
+                stable, last = 0, c
+            end
+            task.wait(0.2)
+        end
+        return countPlaced()
+    end
+
+    local function importLayout(entries, getEntry)
+        local queue = {}
+        for _, e in ipairs(entries) do queue[#queue + 1] = e end
+        if #queue == 0 then
+            for _, e in pairs(entries) do queue[#queue + 1] = e end
+        end
+        local expected = #queue
+        if expected == 0 then return 0 end
+        local nextIndex, placed, firstIssue, finished = 1, 0, nil, 0
+        local workers = math.min(4, expected)
+        for _ = 1, workers do
+            task.spawn(function()
+                while Hub.Alive do
+                    local index = nextIndex
+                    nextIndex = nextIndex + 1
+                    if index > expected then break end
+                    local identifier, pos = getEntry(queue[index])
+                    local ok, issue = placeEntry(identifier, pos)
+                    if ok then placed = placed + 1 elseif not firstIssue then firstIssue = issue end
+                    task.wait()
+                end
+                finished = finished + 1
+            end)
+        end
+        while finished < workers and Hub.Alive do task.wait() end
+        local settled = placed > 0 and waitSettle(12, math.max(1, math.floor(placed * 0.5))) or 0
+        if firstIssue then
+            notify("Layout import", ("Placed %d/%d. %s"):format(placed, expected, tostring(firstIssue)), 8)
+        end
+        return math.max(placed, settled)
+    end
+
+    local function loadStringLayout(text)
+        if type(text) ~= "string" or text == "" then return 0 end
+        local ok, layout = pcall(function() return HttpService:JSONDecode(text) end)
+        if not ok or type(layout) ~= "table" then
+            notify("Layout string", "The layout string could not be parsed.", 8)
+            return 0
+        end
+        local entries = type(layout.Items) == "table" and layout.Items or layout
+        return importLayout(entries, function(e)
+            return e[1] or e.Name or e.ItemId, e[2] or e.Pos or e.CFrame
+        end)
+    end
+
+    local function exportBaseString()
+        local t = getTycoon()
+        local base = t and t:FindFirstChild("Base")
+        if not base then return nil end
+        local list = {}
+        for _, v in ipairs(t:GetChildren()) do
+            local id = getItemId(v)
+            local hitbox = v:FindFirstChild("Hitbox")
+            if id and hitbox and hitbox:IsA("BasePart") then
+                list[#list + 1] = { id, tostring(hitbox.CFrame - base.Position) }
+            end
+        end
+        return HttpService:JSONEncode(list)
+    end
+
+    ------------------------------------------------------------------
+    -- Loading layouts (with verification)
+    ------------------------------------------------------------------
+    local function loadOneLayout(name)
+        if not name or name == "None" then return countPlaced() end
+        if name == "Layout String" then
+            if B.layoutString ~= "" then return loadStringLayout(B.layoutString) end
+            notify("Layout string", "The layout string is empty.")
+            return 0
+        end
+        callRemote("Layouts", "Load", name)
+        return waitSettle(14, 1)
+    end
+
+    local function looksComplete(expected, fraction)
+        local have = countPlaced()
+        if expected and expected > 0 then
+            return have >= math.max(1, math.floor(expected * (fraction or 0.9)))
+        end
+        return have >= 5
+    end
+
+    local function loadLayouts()
+        B.layoutLoading = true
+        local ok, err = pcall(function()
+            teleportForLoad()
+            task.wait(0.15)
+            if B.oreBoost then B.oreBoostActive = true end
+            callRemote("DestroyAll")
+            task.wait(0.15)
+
+            local expected = loadOneLayout(B.layout1) or 0
+            if not looksComplete(expected, 0.5) then
+                teleportForLoad()
+                task.wait(0.1)
+                callRemote("DestroyAll")
+                task.wait(0.15)
+                expected = loadOneLayout(B.layout1) or expected
+            end
+
+            if B.layout2 ~= "None" then
+                task.wait(B.layoutWait)
+                B.oreBoostActive = false
+                task.wait(0.3)
+                if B.withdraw then
+                    callRemote("DestroyAll")
+                    task.wait(0.15)
+                end
+                teleportForLoad()
+                local second = loadOneLayout(B.layout2)
+                if B.withdraw then expected = second or countPlaced() else expected = countPlaced() end
+                if not looksComplete(expected, 0.85) then
+                    teleportForLoad()
+                    task.wait(0.1)
+                    if B.withdraw then callRemote("DestroyAll"); task.wait(0.15) end
+                    local retry = loadOneLayout(B.layout2)
+                    if B.withdraw then expected = retry or expected else expected = math.max(expected, countPlaced()) end
+                end
+                task.wait(0.1)
+                if B.oreBoost then B.oreBoostActive = true end
+            end
+
+            local settled = waitSettle(3, 1)
+            B.layoutExpected = (expected and expected > 0) and math.max(expected, settled) or settled
+            if B.autoResize then resizeAll() end
+            V.furnace, V.indMine = nil, nil
+            refreshFurnace()
+        end)
+        B.layoutLoading = false
+        if B.oreBoost then B.oreBoostActive = true end
+        if not ok then warn("[MH] loadLayouts error:", err) end
+    end
+
+    local lastReload, reloadFails = 0, 0
+    local function ensureLayout()
+        if B.layoutLoading or B.rebirthing or not B.autoRebirth then return end
+        if B.layoutExpected <= 0 then return end
+        local have = countPlaced()
+        local needed = math.max(1, math.floor(B.layoutExpected * 0.9))
+        if have >= needed then reloadFails = 0; return end
+        if os.clock() - lastReload < 6 then return end
+        if reloadFails >= 3 then
+            if have > 0 then B.layoutExpected, reloadFails = have, 0 end
             return
         end
+        lastReload = os.clock()
+        loadLayouts()
+        if countPlaced() >= needed then reloadFails = 0 else reloadFails = reloadFails + 1 end
+    end
+
+    ------------------------------------------------------------------
+    -- Auto rebirth cycle
+    ------------------------------------------------------------------
+    local nextRebirthAt = 0
+    local function rollWait()
+        local lo, hi = math.max(0, B.minWait), math.max(0, B.maxWait)
+        if hi < lo then lo, hi = hi, lo end
+        if hi <= lo then return lo end
+        return lo + math.random() * (hi - lo)
+    end
+
+    local function autoRebirthStep()
+        if B.rebirthing or B.layoutLoading then return end
         local count = getRebirthCount() or 0
         if B.stopLife > 0 and count >= B.stopLife then
             setStatus("Stopped: reached rebirth " .. count)
@@ -1261,41 +1848,261 @@ do
 
         local price = getRebirthPrice() * 1000 ^ B.skips
         local money = getMoney()
-        local remaining = nextWait - (os.time() - lastRebirth)
+        local remaining = nextRebirthAt - os.clock()
         setStatus(("Cash %s / need %s%s"):format(shorten(money), shorten(price),
-            remaining > 0 and (" | wait " .. remaining .. "s") or ""))
-        if money <= price or remaining > 0 then return end
+            remaining > 0 and (" | wait " .. math.ceil(remaining) .. "s") or ""))
+        local canAfford = (money == math.huge) or (money > price)
+        if not canAfford or remaining > 0 then return end
 
-        rebirthBusy = true
+        B.rebirthing = true
         B.oreBoostActive = false
-        task.wait(0.1)
         local before = getRebirthCount()
-        callRemote("Rebirth")
+        local ok, err = pcall(function()
+            task.wait(0.1)
+            callRemote("Rebirth")
+            local deadline = os.clock() + 3
+            local done = false
+            while os.clock() < deadline do
+                local now = getRebirthCount()
+                if (before and now and now > before) or getMoney() < money * 0.5 then done = true; break end
+                task.wait(0.1)
+            end
+            if not done then
+                nextRebirthAt = os.clock() + rollWait()
+                return
+            end
+            local now = getRebirthCount() or 0
+            if B.stopLife > 0 and now >= B.stopLife then
+                B.autoRebirth, B.oreBoost, B.oreBoostActive = false, false, false
+                pcall(function() rebirthToggle:Set(false) end)
+                pcall(function() oreBoostToggle:Set(false) end)
+                return
+            end
+            task.wait(2)
+            if B.autoRebirth then
+                loadLayouts()
+                nextRebirthAt = os.clock() + rollWait()
+            end
+        end)
+        B.rebirthing = false
+        B.layoutLoading = false
+        if B.oreBoost and B.autoRebirth then B.oreBoostActive = true end
+        if not ok then
+            warn("[MH] auto rebirth error:", err)
+            nextRebirthAt = os.clock() + rollWait()
+        end
+    end
 
-        local done = false
-        for _ = 1, 25 do
-            task.wait(0.2)
-            local now = getRebirthCount()
-            if (before and now and now ~= before) or getMoney() < money * 0.5 then
-                done = true
-                break
+    -- Stop on Slipstream: watch the game's own "item obtained" channel
+    local slipstreams = { "None" }
+    do
+        local items = RS:FindFirstChild("Items")
+        if items then
+            for _, v in ipairs(items:GetChildren()) do
+                local tier = v:FindFirstChild("Tier")
+                if tier and tier.Value == 78 then slipstreams[#slipstreams + 1] = v.Name end
             end
         end
-
-        lastRebirth = os.time()
-        nextWait = B.minWait + (B.randomness and math.random(1, 20) or 0)
-        if done then
-            task.wait(2)
-            loadLayouts()
-        else
-            B.oreBoostActive = B.oreBoost
-        end
-        rebirthBusy = false
     end
+    task.spawn(function()
+        local ch
+        for _ = 1, 20 do
+            ch = joltChannel("ItemObtained")
+            if ch then break end
+            task.wait(1)
+        end
+        if not ch then return end
+        pcall(function()
+            table.insert(Hub.Conns, ch:Connect(function(item)
+                if not Hub.Alive or B.stopSlip == "None" then return end
+                if typeof(item) == "Instance" and item.Name == B.stopSlip then
+                    B.autoRebirth, B.oreBoost, B.oreBoostActive = false, false, false
+                    pcall(function() rebirthToggle:Set(false) end)
+                    pcall(function() oreBoostToggle:Set(false) end)
+                    notify("Stop on Slipstream", "You got " .. item.Name .. ". Auto rebirth stopped.", 10)
+                end
+            end))
+        end)
+    end)
+
+    -- Auto fire proximity prompts on the base
+    local cachedPrompts, nextPromptScan = {}, 0
+    local function firePrompts()
+        if B.rebirthing or B.layoutLoading then return end
+        local now = os.clock()
+        if now >= nextPromptScan then
+            cachedPrompts = {}
+            local t = getTycoon()
+            if t then
+                for _, d in ipairs(t:GetDescendants()) do
+                    if d:IsA("ProximityPrompt") then cachedPrompts[#cachedPrompts + 1] = d end
+                end
+            end
+            nextPromptScan = now + 1
+        end
+        for _, p in ipairs(cachedPrompts) do
+            if p.Parent and p.Enabled ~= false then
+                pcall(function() p:InputHoldBegin() end)
+                pcall(function() p:InputHoldEnd() end)
+                if fireproximityprompt then pcall(fireproximityprompt, p) end
+            end
+        end
+    end
+
+    ------------------------------------------------------------------
+    -- Box farming
+    ------------------------------------------------------------------
+    local boxFilter = { research = true, golden = true, diamond = true, lucky = true,
+        shadow = true, crystal = true, others = true }
+    local collecting = false
+
+    local function shouldFarm(name)
+        name = name:lower()
+        if name:find("crystal") then return boxFilter.crystal end
+        if name:find("research") or name:find("basic") then return boxFilter.research end
+        if name:find("golden") or name:find("gold") then return boxFilter.golden end
+        if name:find("diamond") then return boxFilter.diamond end
+        if name:find("lucky") then return boxFilter.lucky end
+        if name:find("shadow") then return boxFilter.shadow end
+        return boxFilter.others
+    end
+
+    local function collectBoxes(force)
+        if collecting or B.rebirthing or B.layoutLoading then return end
+        if not (force or B.farmBoxes) then return end
+        local folder = workspace:FindFirstChild("Boxes")
+        if not (folder and getHRP()) then return end
+        collecting = true
+        local ok, err = pcall(function()
+            for _, box in ipairs(folder:GetChildren()) do
+                if not Hub.Alive or not (force or B.farmBoxes) or B.rebirthing or B.layoutLoading then break end
+                local root = getHRP()
+                if not root then break end
+                if shouldFarm(box.Name) then
+                    local cf
+                    if box:IsA("Model") and box:FindFirstChild("Crate") then
+                        cf = box.Crate.CFrame
+                    else
+                        cf = getTargetCFrame(box)
+                    end
+                    if cf then
+                        root.CFrame = cf
+                        task.wait((101 - B.boxSpeed) / 100)
+                    end
+                end
+            end
+            if B.safetyTeleport then teleportToOwnBase() end
+        end)
+        collecting = false
+        if not ok then warn("[MH] box farm error:", err) end
+    end
+
+    local lastCandy = 0
+    local function confirmCandy()
+        if not B.candyConfirm or os.clock() - lastCandy < 0.4 then return end
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        local gui = pg and pg:FindFirstChild("GUI")
+        local holder = gui and gui:FindFirstChild("InputPrompt")
+        local prompt = holder and holder:FindFirstChild("InputPrompt")
+        local title = prompt and prompt:FindFirstChild("Title")
+        local yes = prompt and prompt:FindFirstChild("Yes")
+        if not (prompt and title and yes and prompt.Visible and yes.Visible) then return end
+        local text = string.lower(title.Text or "")
+        if not (text:find("collect", 1, true) and text:find("candy", 1, true)) then return end
+        local clicked = false
+        if getconnections then
+            for _, c in ipairs(getconnections(yes.MouseButton1Click)) do
+                if c.Function then clicked = pcall(c.Function) or clicked end
+            end
+        end
+        if not clicked and firesignal then clicked = pcall(firesignal, yes.MouseButton1Click) end
+        if not clicked then clicked = pcall(function() yes:Activate() end) end
+        if clicked then lastCandy = os.clock() end
+    end
+
+    ------------------------------------------------------------------
+    -- Menus (vendors) + blueprints
+    ------------------------------------------------------------------
+    local function openMenu(name)
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        local gui = pg and pg:FindFirstChild("GUI")
+        local menus = pg and pg:FindFirstChild("Menus")
+        local focus = gui and gui:FindFirstChild("FocusWindow")
+        if focus and focus.Value then
+            local f = focus.Value
+            if f:IsA("LayerCollector") then f.Enabled = false elseif f:IsA("GuiObject") then f.Visible = false end
+            task.wait(0.01)
+            focus.Value = nil
+        end
+        local ui = (menus and menus:FindFirstChild(name, true)) or (gui and gui:FindFirstChild(name, true))
+        if not ui then notify("Menu", name .. " not found"); return end
+        if ui:IsA("LayerCollector") then
+            ui.Enabled = true
+        elseif ui:IsA("GuiObject") then
+            ui.Visible = true
+        else
+            return
+        end
+        if focus then focus.Value = ui end
+    end
+
+    local function blueprintList()
+        local list = {}
+        local items = RS:FindFirstChild("Items")
+        if not items then return list end
+        for _, v in ipairs(items:GetChildren()) do
+            local tier = v:FindFirstChild("Tier")
+            local price = v:FindFirstChild("BlueprintPrice")
+            if tier and tier.Value ~= 78 and price then
+                list[#list + 1] = { getItemId(v), price.Value }
+            end
+        end
+        return list
+    end
+
+    ------------------------------------------------------------------
+    -- Music (client side only)
+    ------------------------------------------------------------------
+    local function getClientSound(name)
+        local s = SoundService:FindFirstChild(name, true)
+        if s and s:IsA("Sound") then return s end
+        return nil
+    end
+    local function replaceSound(name, value, play)
+        local id = tostring(value or ""):match("(%d+)")
+        if not id then notify("Music", "Enter a valid Roblox audio asset ID."); return false end
+        local sound = getClientSound(name)
+        if not sound then notify("Music", "Could not find sound: " .. name); return false end
+        sound.SoundId = "rbxassetid://" .. id
+        if play then pcall(function() sound.TimePosition = 0; sound:Play() end) end
+        return true
+    end
+    local MUSIC_PRESETS = {
+        ["Halloween Day"] = { ClientBackgroundMusic = 5707767063, ["Day ambience"] = 9733943062 },
+        ["Halloween Night"] = { ClientBackgroundMusic = 5707766686, ["Night ambience"] = 9733940528 },
+        ["Normal Night"] = { ClientBackgroundMusic = 6454368847, ["Night ambience"] = 9733940528 },
+    }
+    local RADIO_TRACKS = {
+        Mesmerize = 404060129, Roots = 474419296, ["Cloud 9"] = 385287232,
+        ["Track 404064184"] = 404064184, Magic = 385290279, ["Track 428553983"] = 428553983,
+        Dreams = 385285034, ["Tobu - Candyland"] = 335695249,
+    }
+
+    ------------------------------------------------------------------
+    -- Cleanup when the script is re-executed
+    ------------------------------------------------------------------
+    table.insert(Hub.Cleanups, function()
+        B.autoRebirth, B.oreBoost, B.oreBoostActive, B.farmRP = false, false, false, false
+        B.farmBoxes, B.autoPrompts, B.candyConfirm, B.antiLeave = false, false, false, false
+        B.trackOres, B.trackBoxes = false, false
+        clearOreTags()
+        clearBoxTags()
+    end)
 
     ------------------------------------------------------------------
     -- BOOST TAB
     ------------------------------------------------------------------
+    do
     BoostTab:CreateSection("Auto Rebirth")
     boostStatus = BoostTab:CreateLabel("Status: idle")
 
@@ -1305,28 +2112,33 @@ do
         Flag = "VxAutoRebirth",
         Callback = function(state)
             B.autoRebirth = state
-            lastRebirth = os.time()
-            nextWait = B.minWait
-            setLoop("vxAutoRebirth", state, 0.5, autoRebirthStep)
+            nextRebirthAt = 0
+            if state then B.layoutExpected = 0; reloadFails = 0 end
+            setLoop("vxAutoRebirth", state, 0.4, function()
+                autoRebirthStep()
+                ensureLayout()
+            end)
             if not state then setStatus("Status: stopped") end
         end,
     })
 
     BoostTab:CreateInput({
-        Name = "Min time between rebirths (seconds)",
+        Name = "Wait after layout: min (seconds)",
+        CurrentValue = "7",
+        PlaceholderText = "7",
+        RemoveTextAfterFocusLost = false,
+        Flag = "VxMinWait",
+        Callback = function(text) B.minWait = math.max(0, tonumber(text) or 7) end,
+    })
+    BoostTab:CreateInput({
+        Name = "Wait after layout: max (seconds)",
         CurrentValue = "20",
         PlaceholderText = "20",
         RemoveTextAfterFocusLost = false,
-        Flag = "VxMinWait",
-        Callback = function(text) B.minWait = tonumber(text) or 20 end,
+        Flag = "VxMaxWait",
+        Callback = function(text) B.maxWait = math.max(0, tonumber(text) or 20) end,
     })
-
-    BoostTab:CreateToggle({
-        Name = "Add random wait (+1 to 20 s)",
-        CurrentValue = false,
-        Flag = "VxRandom",
-        Callback = function(state) B.randomness = state end,
-    })
+    BoostTab:CreateLabel("A random wait between min and max happens before each rebirth. Set both the same for a fixed wait.")
 
     BoostTab:CreateSlider({
         Name = "Wait for skips (price x1000 per skip)",
@@ -1337,7 +2149,6 @@ do
         Flag = "VxSkips",
         Callback = function(v) B.skips = v end,
     })
-
     BoostTab:CreateInput({
         Name = "Stop at rebirth count (0 = never)",
         CurrentValue = "0",
@@ -1346,11 +2157,25 @@ do
         Flag = "VxStopLife",
         Callback = function(text) B.stopLife = tonumber(text) or 0 end,
     })
+    BoostTab:CreateDropdown({
+        Name = "Stop when you get this Slipstream",
+        Options = slipstreams,
+        CurrentOption = { "None" },
+        MultipleOptions = false,
+        Flag = "VxStopSlip",
+        Callback = function(sel) B.stopSlip = firstOption(sel) or "None" end,
+    })
 
     BoostTab:CreateSection("Layouts (loaded after every rebirth)")
+    BoostTab:CreateToggle({
+        Name = "Ghost Load (do not teleport to base before loading)",
+        CurrentValue = false,
+        Flag = "VxGhostLoad",
+        Callback = function(state) B.ghostLoad = state end,
+    })
     BoostTab:CreateDropdown({
         Name = "First layout (ore boost layout)",
-        Options = { "Layout1", "Layout2", "Layout3" },
+        Options = { "Layout1", "Layout2", "Layout3", "Layout String" },
         CurrentOption = { "Layout1" },
         MultipleOptions = false,
         Flag = "VxLayout1",
@@ -1358,7 +2183,7 @@ do
     })
     BoostTab:CreateDropdown({
         Name = "Second layout (loaded after the wait)",
-        Options = { "None", "Layout1", "Layout2", "Layout3" },
+        Options = { "None", "Layout1", "Layout2", "Layout3", "Layout String" },
         CurrentOption = { "None" },
         MultipleOptions = false,
         Flag = "VxLayout2",
@@ -1383,6 +2208,39 @@ do
         Callback = function() task.spawn(loadLayouts) end,
     })
 
+    BoostTab:CreateSection("Layout string (share or back up a base)")
+    local layoutInput
+    layoutInput = BoostTab:CreateInput({
+        Name = "Layout string",
+        CurrentValue = "",
+        PlaceholderText = "paste a layout string",
+        RemoveTextAfterFocusLost = false,
+        Flag = "VxLayoutString",
+        Callback = function(text) B.layoutString = text or "" end,
+    })
+    BoostTab:CreateButton({
+        Name = "Copy my current base as a layout string",
+        Callback = function()
+            local s = exportBaseString()
+            if not s then notify("Layout string", "Could not read your base."); return end
+            B.layoutString = s
+            if setclipboard then pcall(setclipboard, s) end
+            pcall(function() layoutInput:Set(s) end)
+            notify("Layout string", "Copied (" .. #s .. " characters).")
+        end,
+    })
+    BoostTab:CreateButton({
+        Name = "Clear base and load the layout string",
+        Callback = function()
+            task.spawn(function()
+                teleportForLoad()
+                callRemote("DestroyAll")
+                task.wait(0.3)
+                loadStringLayout(B.layoutString)
+            end)
+        end,
+    })
+
     BoostTab:CreateSection("Ore Boost (ores teleport through your upgraders)")
     oreBoostToggle = BoostTab:CreateToggle({
         Name = "Ore Boost",
@@ -1393,6 +2251,78 @@ do
             B.oreBoostActive = state
         end,
     })
+
+    BoostTab:CreateLabel("Primary furnace = where ore is sold after boosting. Auto uses the first one found.")
+    local furnaceDropdown
+    furnaceDropdown = BoostTab:CreateDropdown({
+        Name = "Primary furnace (from your base)",
+        Options = furnaceNames(),
+        CurrentOption = { "Auto" },
+        MultipleOptions = false,
+        Flag = "VxFurnace",
+        Callback = function(sel)
+            B.primaryFurnace = firstOption(sel) or "Auto"
+            V.furnace = nil
+            refreshFurnace()
+        end,
+    })
+    BoostTab:CreateInput({
+        Name = "Primary furnace name (exact)",
+        CurrentValue = "",
+        PlaceholderText = "or type Auto",
+        RemoveTextAfterFocusLost = false,
+        Flag = "VxFurnaceName",
+        Callback = function(text)
+            local name = (text or ""):match("^%s*(.-)%s*$")
+            if name == "" then name = "Auto" end
+            B.primaryFurnace = name
+            V.furnace = nil
+            refreshFurnace()
+            pcall(function() furnaceDropdown:Set({ name }) end)
+        end,
+    })
+    BoostTab:CreateButton({
+        Name = "Refresh furnace list",
+        Callback = function() pcall(function() furnaceDropdown:Refresh(furnaceNames()) end) end,
+    })
+
+    BoostTab:CreateLabel("Mines to boost: leave empty to boost every mine, or pick the ones you want boosted.")
+    local function setMines(names)
+        B.selectedMines = {}
+        for _, n in ipairs(names or {}) do
+            if n and n ~= "" and n ~= "None" then B.selectedMines[n] = true end
+        end
+    end
+    local mineDropdown
+    mineDropdown = BoostTab:CreateDropdown({
+        Name = "Mines to boost",
+        Options = mineNames(),
+        CurrentOption = {},
+        MultipleOptions = true,
+        Flag = "VxMines",
+        Callback = function(sel) setMines(sel) end,
+    })
+    BoostTab:CreateInput({
+        Name = "Mines to boost (names, comma separated)",
+        CurrentValue = "",
+        PlaceholderText = "Havium Mine, Pumpkinite Mine",
+        RemoveTextAfterFocusLost = false,
+        Flag = "VxMinesInput",
+        Callback = function(text)
+            local names = {}
+            for name in string.gmatch(text or "", "[^,]+") do
+                name = name:match("^%s*(.-)%s*$")
+                if name ~= "" then names[#names + 1] = name end
+            end
+            setMines(names)
+            pcall(function() mineDropdown:Set(names) end)
+        end,
+    })
+    BoostTab:CreateButton({
+        Name = "Refresh mine list",
+        Callback = function() pcall(function() mineDropdown:Refresh(mineNames()) end) end,
+    })
+
     BoostTab:CreateSlider({
         Name = "Upgrade loop count (times per upgrader)",
         Range = { 1, 5 },
@@ -1425,6 +2355,15 @@ do
                 pcall(function() oreBoostToggle:Set(false) end)
                 pcall(function() rebirthToggle:Set(false) end)
             end
+        end,
+    })
+    BoostTab:CreateToggle({
+        Name = "Auto fire proximity prompts on base",
+        CurrentValue = false,
+        Flag = "VxPrompts",
+        Callback = function(state)
+            B.autoPrompts = state
+            setLoop("vxPrompts", state, 0.5, firePrompts)
         end,
     })
 
@@ -1485,7 +2424,7 @@ do
 
     BoostTab:CreateSection("Tracking")
     BoostTab:CreateToggle({
-        Name = "Track ore value",
+        Name = "Track ore value (max 50 ores)",
         CurrentValue = false,
         Flag = "VxTrackOres",
         Callback = function(state)
@@ -1498,35 +2437,8 @@ do
                     end
                 end
             else
-                clearTags(oreTags)
+                clearOreTags()
             end
-        end,
-    })
-    BoostTab:CreateToggle({
-        Name = "Track dropped boxes",
-        CurrentValue = false,
-        Flag = "VxTrackBoxes",
-        Callback = function(state)
-            B.trackBoxes = state
-            setLoop("vxBoxTags", state, 1, function()
-                local folder = workspace:FindFirstChild("Boxes")
-                if not folder then return end
-                for _, box in ipairs(folder:GetChildren()) do
-                    if not boxTags[box] then
-                        local part = boxAdornee(box)
-                        if part then
-                            local gui = makeTag(box.Name)
-                            gui.Adornee = part
-                            gui.Parent = part
-                            boxTags[box] = gui
-                            box.Destroying:Connect(function()
-                                if boxTags[box] then boxTags[box]:Destroy(); boxTags[box] = nil end
-                            end)
-                        end
-                    end
-                end
-            end)
-            if not state then clearTags(boxTags) end
         end,
     })
 
@@ -1542,24 +2454,204 @@ do
             local ores = getOres()
             lines[#lines + 1] = "Ore folder: " .. (ores and (ores:GetFullName() .. " (" .. #ores:GetChildren() .. " ores)") or "NOT FOUND")
             refreshFurnace()
-            lines[#lines + 1] = "Furnace: " .. (V.furnace and V.furnace.Name or "none") .. " | Ind mine: " .. (V.indMine and V.indMine.Name or "none")
-            lines[#lines + 1] = "-- items (Name | Plane | ItemId | Model | UpgradePart) --"
+            lines[#lines + 1] = "Furnace: " .. (V.furnace and V.furnace.Name or "none") .. " | Mine: " .. (V.indMine and V.indMine.Name or "none")
+            lines[#lines + 1] = "Placed items: " .. countPlaced()
+            lines[#lines + 1] = "-- items (Name | ItemId | Model | UpgradePart | Furnace | Mine) --"
             if t then
                 for i, item in ipairs(t:GetChildren()) do
                     if i > 120 then lines[#lines + 1] = "..."; break end
-                    lines[#lines + 1] = ("%s | %s | %s | %s | %s"):format(item.Name,
-                        tostring(item:FindFirstChild("Plane") ~= nil), tostring(isItem(item)),
-                        tostring(item:FindFirstChild("Model") ~= nil),
-                        tostring(upgradePart(item) ~= nil))
+                    lines[#lines + 1] = ("%s | %s | %s | %s | %s | %s"):format(item.Name,
+                        tostring(isItem(item)), tostring(item:FindFirstChild("Model") ~= nil),
+                        tostring(upgradePart(item) ~= nil), tostring(isFurnace(item)), tostring(isMine(item)))
                 end
             end
             showText(table.concat(lines, "\n"))
         end,
     })
 
+    end
+
+    ------------------------------------------------------------------
+    -- BOX FARMING TAB
+    ------------------------------------------------------------------
+    do
+    local BoxTab = Window:CreateTab("Box Farming")
+    BoxTab:CreateSection("Farming")
+    BoxTab:CreateToggle({
+        Name = "Farm boxes (teleports to every dropped box)",
+        CurrentValue = false,
+        Flag = "VxFarmBoxes",
+        Callback = function(state)
+            B.farmBoxes = state
+            setLoop("vxFarmBoxes", state, 0.1, collectBoxes)
+        end,
+    })
+    BoxTab:CreateSlider({
+        Name = "Farm speed",
+        Range = { 1, 100 },
+        Increment = 1,
+        Suffix = "speed",
+        CurrentValue = 30,
+        Flag = "VxBoxSpeed",
+        Callback = function(v) B.boxSpeed = v end,
+    })
+    BoxTab:CreateToggle({
+        Name = "Return to base after farming",
+        CurrentValue = false,
+        Flag = "VxSafetyTp",
+        Callback = function(state) B.safetyTeleport = state end,
+    })
+    BoxTab:CreateButton({
+        Name = "Collect boxes once",
+        Callback = function() task.spawn(collectBoxes, true) end,
+    })
+    BoxTab:CreateToggle({
+        Name = "Auto confirm candy collection (Yes)",
+        CurrentValue = false,
+        Flag = "VxCandy",
+        Callback = function(state)
+            B.candyConfirm = state
+            setLoop("vxCandy", state, 0.1, confirmCandy)
+        end,
+    })
+    BoxTab:CreateToggle({
+        Name = "Track dropped boxes (max 25)",
+        CurrentValue = false,
+        Flag = "VxTrackBoxes",
+        Callback = function(state)
+            B.trackBoxes = state
+            setLoop("vxBoxTags", state, 1, function()
+                local folder = workspace:FindFirstChild("Boxes")
+                if not folder then return end
+                for _, box in ipairs(folder:GetChildren()) do
+                    if not boxTags[box] and boxTagCount < 25 then
+                        local part = boxAdornee(box)
+                        if part then
+                            local gui = makeTag(box.Name)
+                            gui.Adornee = part
+                            gui.Parent = part
+                            boxTags[box] = gui
+                            boxTagCount = boxTagCount + 1
+                            box.Destroying:Connect(function()
+                                if boxTags[box] then
+                                    boxTags[box]:Destroy()
+                                    boxTags[box] = nil
+                                    boxTagCount = math.max(0, boxTagCount - 1)
+                                end
+                            end)
+                        end
+                    end
+                end
+            end)
+            if not state then clearBoxTags() end
+        end,
+    })
+
+    BoxTab:CreateSection("Which boxes to farm")
+    local filterToggles = {
+        { "Research / basic crates", "research" }, { "Golden crates", "golden" },
+        { "Diamond crates", "diamond" }, { "Lucky crates", "lucky" },
+        { "Shadow crates", "shadow" }, { "Crystal crates", "crystal" },
+        { "Others (seasonal, executive, gift, gamepass)", "others" },
+    }
+    for _, entry in ipairs(filterToggles) do
+        BoxTab:CreateToggle({
+            Name = entry[1],
+            CurrentValue = true,
+            Flag = "VxFilter" .. entry[2],
+            Callback = function(state) boxFilter[entry[2]] = state end,
+        })
+    end
+
+    BoxTab:CreateSection("Mystery boxes")
+    BoxTab:CreateDropdown({
+        Name = "Box to open",
+        Options = { "Regular", "Unreal", "Inferno", "Red-Banded", "Spectral", "Pumpkin", "Luxury",
+            "Festive", "Magnificent", "Twitch", "Birthday", "Heavenly", "Easter", "Cake Raffle" },
+        CurrentOption = { "Regular" },
+        MultipleOptions = false,
+        Flag = "VxBoxType",
+        Callback = function(sel) B.selectedBox = firstOption(sel) or "Regular" end,
+    })
+    BoxTab:CreateInput({
+        Name = "Seconds between opens",
+        CurrentValue = "1",
+        PlaceholderText = "1",
+        RemoveTextAfterFocusLost = false,
+        Flag = "VxBoxWait",
+        Callback = function(text) B.boxWait = math.max(0.05, tonumber(text) or 1) end,
+    })
+    local lastBoxOpen = 0
+    BoxTab:CreateToggle({
+        Name = "Auto open the selected box",
+        CurrentValue = false,
+        Flag = "VxOpenBox",
+        Callback = function(state)
+            setLoop("vxOpenBox", state, 0.05, function()
+                if os.clock() - lastBoxOpen >= B.boxWait then
+                    lastBoxOpen = os.clock()
+                    callRemote("MysteryBox", B.selectedBox)
+                end
+            end)
+        end,
+    })
+
+    end
+
+    ------------------------------------------------------------------
+    -- VENDORS TAB
+    ------------------------------------------------------------------
+    do
+    local VendorTab = Window:CreateTab("Vendors")
+    VendorTab:CreateSection("Open menus")
+    local MENUS = {
+        { "Craftsman", "Craftsman" }, { "Masked Man", "MaskedMan" }, { "Box man", "SpookMcDook" },
+        { "Superstitious Crafting", "Superstitious" }, { "True Book Of Knowledge", "BookOfKnowledge" },
+        { "Phantasm", "Phantasm" }, { "Fleabag", "Fleabag" }, { "Event", "Event" },
+    }
+    for _, m in ipairs(MENUS) do
+        VendorTab:CreateButton({
+            Name = "Open " .. m[1],
+            Callback = function() task.spawn(openMenu, m[2]) end,
+        })
+    end
+
+    VendorTab:CreateSection("Craftsman blueprints (uses RP)")
+    local bpLabel = VendorTab:CreateLabel("Press refresh to count your missing blueprints.")
+    local function refreshBlueprints()
+        local list = blueprintList()
+        local missing, cost = 0, 0
+        for _, bp in ipairs(list) do
+            local ok, has = callRemote("CraftsmanEvents", "type:hasblueprint", bp[1])
+            if ok and not has then missing = missing + 1; cost = cost + bp[2] end
+        end
+        pcall(function()
+            bpLabel:Set(("Missing %d/%d blueprints, total cost %s RP"):format(missing, #list, shorten(cost)))
+        end)
+    end
+    VendorTab:CreateButton({
+        Name = "Refresh blueprint count",
+        Callback = function() task.spawn(refreshBlueprints) end,
+    })
+    VendorTab:CreateButton({
+        Name = "Buy all missing blueprints",
+        Callback = function()
+            task.spawn(function()
+                for _, bp in ipairs(blueprintList()) do
+                    local ok, has = callRemote("CraftsmanEvents", "type:hasblueprint", bp[1])
+                    if ok and not has then callRemote("CraftsmanEvents", "type:buyblueprint", bp[1]) end
+                end
+                refreshBlueprints()
+            end)
+        end,
+    })
+
+    end
+
     ------------------------------------------------------------------
     -- TELEPORT TAB
     ------------------------------------------------------------------
+    do
     local TeleportTab = Window:CreateTab("Teleport")
     TeleportTab:CreateSection("Player base")
     local selectedPlayer = LocalPlayer.Name
@@ -1577,8 +2669,8 @@ do
         Callback = function(sel) selectedPlayer = firstOption(sel) or LocalPlayer.Name end,
     })
     local function refreshPlayers() pcall(function() playerDropdown:Refresh(playerNames()) end) end
-    Players.PlayerAdded:Connect(refreshPlayers)
-    Players.PlayerRemoving:Connect(function() task.delay(0.2, refreshPlayers) end)
+    connect(Players.PlayerAdded, refreshPlayers)
+    connect(Players.PlayerRemoving, function() task.delay(0.2, refreshPlayers) end)
     TeleportTab:CreateButton({
         Name = "Teleport to base",
         Callback = function()
@@ -1615,12 +2707,11 @@ do
         ["Heart of Void"] = 5621678877, ["The Temple"] = 5621679766, ["Shiny Void"] = 5621680266,
         ["Restore Data 2"] = 1778064565, ["Data Restore V3"] = 16433781330,
     }
-    local placeNames = { "The Void", "Revenge of John Doe", "Illusion", "Heart of Void",
-        "The Temple", "Shiny Void", "Restore Data 2", "Data Restore V3" }
     local selectedPlace = "The Void"
     TeleportTab:CreateDropdown({
         Name = "Place",
-        Options = placeNames,
+        Options = { "The Void", "Revenge of John Doe", "Illusion", "Heart of Void",
+            "The Temple", "Shiny Void", "Restore Data 2", "Data Restore V3" },
         CurrentOption = { "The Void" },
         MultipleOptions = false,
         Flag = "VxPlace",
@@ -1634,20 +2725,95 @@ do
         end,
     })
 
+    end
+
+    ------------------------------------------------------------------
+    -- MUSIC TAB
+    ------------------------------------------------------------------
+    do
+    local MusicTab = Window:CreateTab("Music")
+    MusicTab:CreateSection("Seasonal music (only you hear it)")
+    local selectedPreset = "Halloween Day"
+    MusicTab:CreateDropdown({
+        Name = "Music preset",
+        Options = { "Halloween Day", "Halloween Night", "Normal Night" },
+        CurrentOption = { "Halloween Day" },
+        MultipleOptions = false,
+        Flag = "VxMusicPreset",
+        Callback = function(sel) selectedPreset = firstOption(sel) or "Halloween Day" end,
+    })
+    MusicTab:CreateButton({
+        Name = "Apply preset",
+        Callback = function()
+            local preset = MUSIC_PRESETS[selectedPreset]
+            if not preset then return end
+            local applied = 0
+            for target, id in pairs(preset) do
+                if replaceSound(target, id, true) then applied = applied + 1 end
+            end
+            notify("Music", "Updated " .. applied .. " sound(s).")
+        end,
+    })
+
+    MusicTab:CreateSection("Base radio")
+    local radioNames = {}
+    for name in pairs(RADIO_TRACKS) do radioNames[#radioNames + 1] = name end
+    table.sort(radioNames)
+    local selectedRadio = "Mesmerize"
+    MusicTab:CreateDropdown({
+        Name = "Radio song",
+        Options = radioNames,
+        CurrentOption = { "Mesmerize" },
+        MultipleOptions = false,
+        Flag = "VxRadio",
+        Callback = function(sel) selectedRadio = firstOption(sel) or "Mesmerize" end,
+    })
+    MusicTab:CreateButton({
+        Name = "Set and play base radio",
+        Callback = function()
+            if replaceSound("ClientBaseRadio", RADIO_TRACKS[selectedRadio], true) then
+                notify("Base radio", selectedRadio .. " is playing.")
+            end
+        end,
+    })
+
+    MusicTab:CreateSection("Custom sound")
+    local musicTargets = { "Day ambience", "Night ambience", "ClientBackgroundMusic", "ClientBaseRadio" }
+    local selectedTarget, customId = "ClientBaseRadio", ""
+    MusicTab:CreateDropdown({
+        Name = "Sound to replace",
+        Options = musicTargets,
+        CurrentOption = { "ClientBaseRadio" },
+        MultipleOptions = false,
+        Flag = "VxMusicTarget",
+        Callback = function(sel) selectedTarget = firstOption(sel) or "ClientBaseRadio" end,
+    })
+    MusicTab:CreateInput({
+        Name = "Replacement audio ID",
+        CurrentValue = "",
+        PlaceholderText = "404060129 or rbxassetid://404060129",
+        RemoveTextAfterFocusLost = false,
+        Flag = "VxCustomMusic",
+        Callback = function(text) customId = text or "" end,
+    })
+    MusicTab:CreateButton({
+        Name = "Replace and play",
+        Callback = function()
+            if replaceSound(selectedTarget, customId, true) then
+                notify("Music", selectedTarget .. " updated.")
+            end
+        end,
+    })
+
+    end
+
     ------------------------------------------------------------------
     -- MISC TAB
     ------------------------------------------------------------------
+    do
     local MiscTab = Window:CreateTab("Misc")
     MiscTab:CreateSection("Character")
 
-    local function applyCharacter(hum)
-        if not hum then return end
-        if B.walk > 16 then hum.WalkSpeed = B.walk end
-        if B.jump > 50 then
-            hum.UseJumpPower = true
-            hum.JumpPower = B.jump
-        end
-    end
     local function currentHumanoid()
         local c = LocalPlayer.Character
         return c and c:FindFirstChildOfClass("Humanoid")
@@ -1679,14 +2845,14 @@ do
             if hum then hum.UseJumpPower = true; hum.JumpPower = v end
         end,
     })
-    LocalPlayer.CharacterAdded:Connect(function(char)
+    connect(LocalPlayer.CharacterAdded, function(char)
         local hum = char:WaitForChild("Humanoid", 10)
-        applyCharacter(hum)
-        if hum then
-            hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
-                if B.walk > 16 and hum.WalkSpeed < B.walk then hum.WalkSpeed = B.walk end
-            end)
-        end
+        if not hum then return end
+        if B.walk > 16 then hum.WalkSpeed = B.walk end
+        if B.jump > 50 then hum.UseJumpPower = true; hum.JumpPower = B.jump end
+        hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+            if Hub.Alive and B.walk > 16 and hum.WalkSpeed < B.walk then hum.WalkSpeed = B.walk end
+        end)
     end)
 
     MiscTab:CreateSection("World")
@@ -1695,11 +2861,10 @@ do
         CurrentValue = false,
         Flag = "VxBlur",
         Callback = function(state)
-            local blur = game:GetService("Lighting"):FindFirstChild("Blur")
+            local blur = Lighting:FindFirstChild("Blur")
             if blur then blur.Enabled = not state end
         end,
     })
-
     MiscTab:CreateToggle({
         Name = "Anti leave base (respawn if you leave your base)",
         CurrentValue = false,
@@ -1708,7 +2873,8 @@ do
     })
     local activeValue = LocalPlayer:FindFirstChild("ActiveTycoon")
     if activeValue then
-        activeValue.Changed:Connect(function()
+        connect(activeValue.Changed, function()
+            if not Hub.Alive then return end
             local tycoon = getTycoon()
             if B.antiLeave and tycoon and (activeValue.Value == nil or activeValue.Value ~= tycoon) then
                 local hum = currentHumanoid()
@@ -1716,6 +2882,25 @@ do
             end
         end)
     end
+    end
+end
+
+----------------------------------------------------------------------
+-- Unload (so injecting the script again replaces this copy cleanly)
+----------------------------------------------------------------------
+function Hub.Unload()
+    Hub.Alive = false
+    for key in pairs(loops) do loops[key] = (loops[key] or 0) + 1 end
+    for _, fn in ipairs(Hub.Cleanups) do pcall(fn) end
+    for _, conn in ipairs(Hub.Conns) do pcall(function() conn:Disconnect() end) end
+    pcall(function() Rayfield:Destroy() end)
+    pcall(function()
+        local parent = (gethui and gethui()) or LocalPlayer:FindFirstChild("PlayerGui")
+        local text = parent and parent:FindFirstChild("ViyxText")
+        if text then text:Destroy() end
+    end)
+    if ENV[HUB_KEY] == Hub then ENV[HUB_KEY] = nil end
+    print("[MH] Previous instance unloaded.")
 end
 
 ----------------------------------------------------------------------
