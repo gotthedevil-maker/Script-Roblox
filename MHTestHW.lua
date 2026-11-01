@@ -2050,13 +2050,16 @@ do
     ------------------------------------------------------------------
     -- Halloween candy: collect at the furnaces and answer the Yes/No dialog.
     -- The Yes button moves between left and right, so it is looked up by
-    -- name / text every time and never by a fixed position.
+    -- name / text every time and never by a fixed position. The click rotates
+    -- between: game signals -> executor mouse -> VirtualInputManager mouse.
     ------------------------------------------------------------------
     local Candy = {}
     do
         local VIM = game:GetService("VirtualInputManager")
         local GuiService = game:GetService("GuiService")
-        local state = { lastAction = 0, tries = 0, busy = false, nextScan = 0, cache = {} }
+        local UIS = game:GetService("UserInputService")
+        local CLICK_METHODS = { "signal", "mouse", "vim" }
+        local state = { lastAction = 0, tries = 0, busy = false, nextScan = 0, cache = {}, lastMethod = "-" }
 
         local function status(text)
             if Candy.label then pcall(function() Candy.label:Set(text) end) end
@@ -2099,6 +2102,16 @@ do
             return nil
         end
 
+        -- Screen position of the centre of the button right now
+        local function buttonCenter(btn)
+            if not (btn and btn:IsA("GuiObject")) then return nil end
+            local sg = btn:FindFirstAncestorOfClass("ScreenGui")
+            local inset = (sg and sg.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
+            local pos = btn.AbsolutePosition + btn.AbsoluteSize / 2
+            return Vector2.new(pos.X, pos.Y + inset.Y)
+        end
+
+        -- 1) call what the game connected to the button
         local function pressSignals(btn)
             local fired = false
             local signals = { "MouseButton1Click", "Activated" }
@@ -2128,37 +2141,71 @@ do
             return fired
         end
 
-        -- Real mouse click on the centre of the button, wherever it is right now
-        local function pressMouse(btn)
-            if not (btn and btn:IsA("GuiObject")) then return false end
-            local sg = btn:FindFirstAncestorOfClass("ScreenGui")
-            local inset = (sg and sg.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
-            local pos = btn.AbsolutePosition + btn.AbsoluteSize / 2
-            local x, y = pos.X, pos.Y + inset.Y
+        -- 2) the executor's own mouse (the same way your old script clicked buttons)
+        local function pressExecutorMouse(btn)
+            local target = buttonCenter(btn)
+            if not target then return false end
+            local canMove = (mousemoverel ~= nil) or (mousemoveabs ~= nil)
+            local canClick = (mouse1click ~= nil) or (mouse1press ~= nil and mouse1release ~= nil)
+            if not (canMove and canClick) then return false end
             return (pcall(function()
-                VIM:SendMouseMoveEvent(x, y, game)
-                VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
+                if mousemoverel then
+                    for _ = 1, 2 do  -- second pass corrects mouse acceleration
+                        local d = target - UIS:GetMouseLocation()
+                        mousemoverel(math.floor(d.X), math.floor(d.Y))
+                        task.wait(0.03)
+                    end
+                    mousemoverel(2, 2)
+                else
+                    mousemoveabs(target.X, target.Y)
+                end
+                task.wait(0.1)
+                if mouse1click then
+                    mouse1click()
+                else
+                    mouse1press()
+                    task.wait(0.1)
+                    mouse1release()
+                end
+            end))
+        end
+
+        -- 3) Roblox's virtual input
+        local function pressVirtual(btn)
+            local target = buttonCenter(btn)
+            if not target then return false end
+            return (pcall(function()
+                VIM:SendMouseMoveEvent(target.X, target.Y, game)
+                VIM:SendMouseButtonEvent(target.X, target.Y, 0, true, game, 0)
                 task.wait(0.05)
-                VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
+                VIM:SendMouseButtonEvent(target.X, target.Y, 0, false, game, 0)
             end))
         end
 
         function Candy.confirm()
             local dialog, text = findDialog()
             if not dialog then state.tries = 0; return end
-            if os.clock() - state.lastAction < 0.25 then return end
+            if os.clock() - state.lastAction < 0.35 then return end
             local raw = (text or ""):match("collect%s+([%d,%.]+)")
             local amount = raw and tonumber((raw:gsub(",", ""))) or nil
-            local wantYes = (amount == nil) or amount >= B.candyMin
-            local btn = findButton(dialog, wantYes and "yes" or "no")
-            if not btn then return end
+            local which = ((amount == nil) or amount >= B.candyMin) and "yes" or "no"
+            local btn = findButton(dialog, which)
+            if not btn then
+                status("Dialog open but the " .. which:upper() .. " button was not found")
+                return
+            end
             state.lastAction = os.clock()
-            state.tries = state.tries + 1
-            if state.tries <= 2 then
-                if not pressSignals(btn) then pressMouse(btn) end
-            else
-                pressMouse(btn)  -- the signal click did not close it: use the mouse
-                if state.tries >= 6 then state.tries = 0 end
+            for _ = 1, #CLICK_METHODS do
+                local method = CLICK_METHODS[(state.tries % #CLICK_METHODS) + 1]
+                state.tries = state.tries + 1
+                local ok = (method == "signal" and pressSignals(btn))
+                    or (method == "mouse" and pressExecutorMouse(btn))
+                    or (method == "vim" and pressVirtual(btn))
+                if ok then
+                    state.lastMethod = method
+                    status(("Pressed %s with: %s"):format(which:upper(), method))
+                    break
+                end
             end
         end
 
@@ -2205,15 +2252,15 @@ do
             end
         end
 
-        -- wait for the dialog to show up and be answered
+        -- returns: answered (dialog appeared and then closed), appeared
         local function waitDialog(timeout, active)
             local t0, seen = os.clock(), false
             while os.clock() - t0 < timeout and Hub.Alive and active() do
                 task.wait(0.1)
                 Candy.confirm()
-                if findDialog() then seen = true elseif seen then return true end
+                if findDialog() then seen = true elseif seen then return true, true end
             end
-            return seen
+            return false, seen
         end
 
         function Candy.collect(force)
@@ -2225,7 +2272,7 @@ do
                 if #prompts == 0 then status("No Collect prompt found on your base"); return end
                 local hrp = getHRP()
                 local origin = hrp and hrp.CFrame
-                local answered = 0
+                local answered, stuck = 0, 0
                 for _, p in ipairs(prompts) do
                     if not (Hub.Alive and active()) then break end
                     if p.Parent and p.Enabled ~= false then
@@ -2236,12 +2283,15 @@ do
                         local methods = fireproximityprompt and { "fire", "hold" } or { "hold" }
                         for _, method in ipairs(methods) do
                             trigger(p, method)
-                            if waitDialog(1.5, active) then answered = answered + 1; break end
+                            local done, appeared = waitDialog(4, active)
+                            if done then answered = answered + 1; break end
+                            if appeared then stuck = stuck + 1; break end  -- dialog opened but never closed
                         end
                     end
                 end
                 if B.candyTeleport and hrp and origin then hrp.CFrame = origin end
-                status(("Last run: %d dialog(s) answered, %d prompt(s)"):format(answered, #prompts))
+                status(("Last run: %d answered, %d stuck, %d prompt(s). Last click: %s"):format(
+                    answered, stuck, #prompts, state.lastMethod))
             end)
             state.busy = false
             if not ok then
@@ -2258,8 +2308,9 @@ do
                 for _, which in ipairs({ "yes", "no" }) do
                     local b = findButton(dialog, which)
                     if b and b:IsA("GuiObject") then
-                        lines[#lines + 1] = ("%s -> %s %s | pos %s | size %s | visible %s"):format(which, b.ClassName,
-                            b:GetFullName(), tostring(b.AbsolutePosition), tostring(b.AbsoluteSize), tostring(b.Visible))
+                        lines[#lines + 1] = ("%s -> %s %s | centre %s | size %s | visible %s | active %s"):format(
+                            which, b.ClassName, b:GetFullName(), tostring(buttonCenter(b)),
+                            tostring(b.AbsoluteSize), tostring(b.Visible), tostring(b.Active))
                     else
                         lines[#lines + 1] = which .. " -> NOT FOUND"
                     end
@@ -2267,6 +2318,10 @@ do
             end
             lines[#lines + 1] = ("Executor: getconnections=%s firesignal=%s fireproximityprompt=%s"):format(
                 tostring(getconnections ~= nil), tostring(firesignal ~= nil), tostring(fireproximityprompt ~= nil))
+            lines[#lines + 1] = ("Mouse: mousemoverel=%s mousemoveabs=%s mouse1click=%s mouse1press=%s mouse1release=%s"):format(
+                tostring(mousemoverel ~= nil), tostring(mousemoveabs ~= nil), tostring(mouse1click ~= nil),
+                tostring(mouse1press ~= nil), tostring(mouse1release ~= nil))
+            lines[#lines + 1] = "Last click method: " .. state.lastMethod
             state.nextScan = 0
             local prompts = collectPrompts()
             lines[#lines + 1] = "Collect prompts on base: " .. #prompts
@@ -2928,6 +2983,10 @@ do
             Callback = function() task.spawn(Candy.collect, true) end,
         })
         HalloweenTab:CreateLabel("If nothing is collected from far away, turn on the teleport option.")
+        HalloweenTab:CreateButton({
+            Name = "Test: answer the dialog that is open now",
+            Callback = function() Candy.confirm() end,
+        })
         HalloweenTab:CreateButton({
             Name = "Debug candy (shows copyable text)",
             Callback = Candy.debug,
