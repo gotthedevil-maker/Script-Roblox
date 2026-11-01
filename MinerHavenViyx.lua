@@ -843,7 +843,7 @@ do
         layoutString = "", layoutExpected = 0, layoutLoading = false, rebirthing = false,
         -- ore boost
         oreBoost = false, oreBoostActive = false, loopCount = 1, useIndMine = false,
-        useMoneyLoop = false, farmRP = false, primaryFurnace = "Auto", selectedMines = {},
+        useMoneyLoop = false, farmRP = false, primaryFurnace = "Auto", selectedMines = {}, oreCap = 1e250, maxWorkers = 6,
         oreSize = 0, upgraderSize = 1, autoResize = false, singleItem = "", autoPrompts = false,
         -- trackers
         trackOres = false, trackBoxes = false,
@@ -1216,11 +1216,30 @@ do
     ------------------------------------------------------------------
     -- Ore boost: teleport each ore through the upgraders, then sell it
     ------------------------------------------------------------------
+    -- Overflow protection: an ore that gets too rich is sold instead of boosted
+    -- further, otherwise cash overflows to inf and then becomes NaN.
+    local capCache, capAt = 1e250, 0
+    local function effectiveOreCap()
+        if os.clock() - capAt > 2 then
+            capAt = os.clock()
+            local price = getRebirthPrice() * 1000 ^ B.skips
+            capCache = math.min(1e290, math.max(B.oreCap, price * 1e6))
+        end
+        return capCache
+    end
+
+    local function oreTooRich(ore)
+        local cash = ore:FindFirstChild("Cash")
+        if not cash then return false end
+        local v = cash.Value
+        return v ~= v or v >= effectiveOreCap()
+    end
+
     local function runThrough(ore, part)
         part = toPart(part)
         if not (ore and part) then return end
         for _ = 1, math.max(1, B.loopCount) do
-            if not (Hub.Alive and B.oreBoostActive and ore.Parent and part.Parent) then break end
+            if not (Hub.Alive and B.oreBoostActive and ore.Parent and part.Parent) or oreTooRich(ore) then break end
             pcall(function()
                 ore.Anchored = true
                 ore.AssemblyLinearVelocity = Vector3.zero
@@ -1237,7 +1256,7 @@ do
         local t = getTycoon()
         if not t then return end
         for _, item in ipairs(t:GetChildren()) do
-            if not (Hub.Alive and B.oreBoostActive and ore.Parent) then return end
+            if not (Hub.Alive and B.oreBoostActive and ore.Parent) or oreTooRich(ore) then return end
             if not RESETTER_SET[item.Name] and not (B.useMoneyLoop and MONEY_LOOPABLES[item.Name]) then
                 local part = upgradePart(item)
                 if part then
@@ -1262,7 +1281,7 @@ do
         if not t then return end
         boostOre(ore)
         for _, group in ipairs(RESET_GROUPS) do
-            if not (Hub.Alive and B.oreBoostActive and ore.Parent) then return end
+            if not (Hub.Alive and B.oreBoostActive and ore.Parent) or oreTooRich(ore) then return end
             local item
             for _, n in ipairs(group) do
                 item = t:FindFirstChild(n)
@@ -1300,7 +1319,7 @@ do
     end
 
     local function moneyLoopActive(ore)
-        return Hub.Alive and B.oreBoost and B.oreBoostActive and B.useMoneyLoop and ore.Parent
+        return Hub.Alive and B.oreBoost and B.oreBoostActive and B.useMoneyLoop and ore.Parent and not oreTooRich(ore)
     end
 
     local function starLoop(ore, stars, protect)
@@ -1395,7 +1414,7 @@ do
         if not (Hub.Alive and cash and ore.Parent) then return end
         if cash.Value <= 0 then ore.Anchored = false; return end
         if B.useMoneyLoop then runMoneyLoops(ore) end
-        if B.oreBoostActive and ore.Parent then resetOre(ore) end
+        if B.oreBoostActive and ore.Parent and not oreTooRich(ore) then resetOre(ore) end
         if ore.Parent then
             ore.AssemblyAngularVelocity = Vector3.zero
             ore.AssemblyLinearVelocity = Vector3.zero
@@ -1403,18 +1422,37 @@ do
         end
     end
 
-    -- Limit concurrent boosts so a fast mine cannot spawn hundreds of threads
+    -- Worker pool: at most B.maxWorkers ores are boosted at once. Ores that arrive
+    -- while every worker is busy wait in a queue instead of being skipped.
     local activeBoost, activeCount = {}, 0
+    local boostQueue = {}
     local function startOreBoost(ore, selectedMode)
-        local maxWorkers = selectedMode and 8 or 2
         if not (Hub.Alive and ore and ore.Parent) then return end
-        if activeBoost[ore] or activeCount >= maxWorkers then return end
-        activeBoost[ore] = true
+        if activeBoost[ore] then return end
+        if activeCount >= B.maxWorkers then
+            if #boostQueue < 80 then boostQueue[#boostQueue + 1] = ore end
+            return
+        end
         activeCount = activeCount + 1
-        local ok, err = pcall(runOreBoost, ore)
-        activeBoost[ore] = nil
+        local current = ore
+        while current do
+            if current.Parent and not activeBoost[current] then
+                activeBoost[current] = true
+                local ok, err = pcall(runOreBoost, current)
+                activeBoost[current] = nil
+                if not ok then warn("[MH] ore boost error:", err) end
+            end
+            current = nil
+            if not (Hub.Alive and B.oreBoost) then
+                table.clear(boostQueue)
+                break
+            end
+            while #boostQueue > 0 do
+                local nextOre = table.remove(boostQueue, 1)
+                if nextOre.Parent then current = nextOre; break end
+            end
+        end
         activeCount = math.max(0, activeCount - 1)
-        if not ok then warn("[MH] ore boost error:", err) end
     end
 
     -- Which mine did this ore come from? (only used for "Mines to boost")
@@ -1536,6 +1574,8 @@ do
         if B.trackOres then addOreTag(ore) end
         if B.oreSize > 0 then ore.Size = Vector3.new(B.oreSize, B.oreSize, B.oreSize) end
         if B.oreBoost then
+            local cashNow = getMoney()
+            if cashNow ~= cashNow then return end  -- cash is NaN: stop boosting further
             if B.useIndMine and ore:FindFirstChild("Fuel") then
                 refreshFurnace()
                 local lava = lavaPart(V.indMine)
@@ -1829,6 +1869,7 @@ do
     -- Auto rebirth cycle
     ------------------------------------------------------------------
     local nextRebirthAt = 0
+    local nanRetryAt, nanWarned = 0, false
     local function rollWait()
         local lo, hi = math.max(0, B.minWait), math.max(0, B.maxWait)
         if hi < lo then lo, hi = hi, lo end
@@ -1851,8 +1892,16 @@ do
         local remaining = nextRebirthAt - os.clock()
         setStatus(("Cash %s / need %s%s"):format(shorten(money), shorten(price),
             remaining > 0 and (" | wait " .. math.ceil(remaining) .. "s") or ""))
-        local canAfford = (money == math.huge) or (money > price)
+        local isNaN = (money ~= money)
+        if isNaN and not nanWarned then
+            nanWarned = true
+            notify("Cash is NaN", "Your cash overflowed. Trying to rebirth every 5s to recover. Lower the loop count / ore cap to avoid this.", 12)
+        elseif not isNaN then
+            nanWarned = false
+        end
+        local canAfford = (money == math.huge) or (money > price) or (isNaN and os.clock() >= nanRetryAt)
         if not canAfford or remaining > 0 then return end
+        if isNaN then nanRetryAt = os.clock() + 5 end
 
         B.rebirthing = true
         B.oreBoostActive = false
@@ -2332,6 +2381,15 @@ do
         Flag = "VxLoopCount",
         Callback = function(v) B.loopCount = v end,
     })
+    BoostTab:CreateSlider({
+        Name = "Ores boosted at the same time",
+        Range = { 1, 20 },
+        Increment = 1,
+        Suffix = "ores",
+        CurrentValue = 6,
+        Flag = "VxMaxWorkers",
+        Callback = function(v) B.maxWorkers = v end,
+    })
     BoostTab:CreateToggle({
         Name = "Using Industrial Mine (fuel ores)",
         CurrentValue = false,
@@ -2343,6 +2401,14 @@ do
         CurrentValue = false,
         Flag = "VxMoneyLoop",
         Callback = function(state) B.useMoneyLoop = state end,
+    })
+    BoostTab:CreateInput({
+        Name = "Max ore value before selling (protects from NaN cash)",
+        CurrentValue = "1e250",
+        PlaceholderText = "1e250",
+        RemoveTextAfterFocusLost = false,
+        Flag = "VxOreCap",
+        Callback = function(text) B.oreCap = math.min(1e290, tonumber(text) or 1e250) end,
     })
     BoostTab:CreateToggle({
         Name = "Farm RP (sell every ore, turns off Ore Boost + Auto Rebirth)",
