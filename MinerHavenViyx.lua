@@ -8,6 +8,7 @@
 
     Changes: removed Settings, NPC Teleport, Halloween tabs;
     important threshold settings are available under Auto Section.
+    Candy Fix: activate Candy machines + confirm game collect dialogs.
     This script uses client-side game/executor APIs and cannot be
     validated against live Roblox server behavior by an offline test.
 ]]
@@ -920,42 +921,96 @@ MainTab:CreateToggle({
     end,
 })
 
--- MX6/A4 contribution: automatically confirms the game's "Collect Candy" prompt.
--- This does NOT locate or physically pick up candy in the world.
+-- Candy automation: MX6/A4's confirmation workflow plus collection prompts.
+-- This operates ONLY on the player's placed Candy Center/Factory/Metropolis.
+-- Credits: original Yes-dialog technique by MX6/A4; furnace activation
+-- is a Viyx 1.5 fix.  Does not pick up world/ground candy.
+local candyEnabled = false
 local lastCandyConfirmAt = 0
-local function confirmCandyCollection()
-    if not Hub.Alive or os.clock() - lastCandyConfirmAt < 0.4 then return end
+local lastCandyRequestAt = 0
+local candyNextIndex = 0
+local candyStatusText = ""
+local candyStatusLabel = MainTab:CreateLabel("Candy: OFF")
+local candyItemNames = {
+    ["Candy Center"] = true,
+    ["Candy Factory"] = true,
+    ["Candy Metropolis"] = true,
+}
 
+local function candyStatus(message)
+    if candyStatusText ~= message then
+        candyStatusText = message
+        candyStatusLabel:Set("Candy: " .. message)
+    end
+end
+
+local function candyDialog()
     local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not playerGui then return end
-    local gameGui = playerGui:FindFirstChild("GUI")
+    if not playerGui then return nil, false end
+    local gui = playerGui:FindFirstChild("GUI")
+    local roots = {}
+    if gui then
+        local direct = gui:FindFirstChild("InputPrompt")
+        if direct then roots[#roots + 1] = direct end
+        local prompts = gui:FindFirstChild("Prompts")
+        if prompts and prompts:FindFirstChild("InputPrompt") then
+            roots[#roots + 1] = prompts.InputPrompt
+        end
+    end
     local prompts = playerGui:FindFirstChild("Prompts")
-        or (gameGui and gameGui:FindFirstChild("Prompts"))
-    local promptContainer = prompts and prompts:FindFirstChild("InputPrompt")
-    local prompt = (promptContainer and promptContainer:FindFirstChild("InputPrompt"))
-        or (gameGui and gameGui:FindFirstChild("InputPrompt")
-            and gameGui.InputPrompt:FindFirstChild("InputPrompt"))
-    if not (prompt and prompt:IsA("GuiObject") and prompt.Visible) then return end
-
-    local title = prompt:FindFirstChild("Title")
-    local yes = prompt:FindFirstChild("Yes")
-    if not (title and title:IsA("TextLabel") and yes and yes:IsA("GuiButton") and yes.Visible) then
-        return
+    if prompts and prompts:FindFirstChild("InputPrompt") then
+        roots[#roots + 1] = prompts.InputPrompt
     end
-    local promptText = string.lower(title.Text or "")
-    if not (string.find(promptText, "collect", 1, true)
-        and string.find(promptText, "candy", 1, true)) then
-        return
+    for _, root in ipairs(roots) do
+        if not (root:IsA("ScreenGui") and not root.Enabled) then
+            local panel = root:FindFirstChild("InputPrompt") or root
+            local absorb = root:FindFirstChild("Absorb")
+            local title = panel:FindFirstChild("Title")
+            local yes = panel:FindFirstChild("Yes")
+            -- Absorb.Visible is the authoritative popup signal when present.
+            -- Some games keep the inner panel's Visible=true while closed.
+            local showing = false
+            if absorb and absorb:IsA("GuiObject") then
+                showing = absorb.Visible
+            elseif panel:IsA("GuiObject") then
+                showing = panel.Visible and (not root:IsA("GuiObject") or root.Visible)
+            end
+            if showing then
+            local message = ""
+            if title and (title:IsA("TextLabel") or title:IsA("TextButton")) then
+                message = string.lower(tostring(title.Text or ""))
+            end
+            local isCollect = message:find("collect", 1, true) ~= nil
+            local isCandy = message:find("candy", 1, true) ~= nil
+                or (lastCandyRequestAt > 0 and os.clock() - lastCandyRequestAt < 6
+                    and message:find("would you like to collect", 1, true) ~= nil)
+            if isCollect and isCandy and yes and yes:IsA("GuiButton") and yes.Visible then
+                return yes, true
+            end
+            return nil, true -- Another dialog is open; don't trigger anything.
+            end
+        end
     end
+    return nil, false
+end
 
-    -- Prefer the same click hooks as MX6; fallback to Roblox GuiButton:Activate().
+local function confirmCandyCollection()
+    if not candyEnabled or os.clock() - lastCandyConfirmAt < 1.25 then return end
+    local yes = candyDialog()
+    if not yes then return end
     local clicked = false
+    -- getconnections exposes :Fire() on common executors; invoking
+    -- connection.Function directly (as in the old version) can be unreliable.
     if type(getconnections) == "function" then
-        local ok, connections = pcall(getconnections, yes.MouseButton1Click)
-        if ok and type(connections) == "table" then
-            for _, conn in ipairs(connections) do
-                if type(conn.Function) == "function" then
-                    clicked = pcall(conn.Function) or clicked
+        local ok, conns = pcall(getconnections, yes.MouseButton1Click)
+        if ok and type(conns) == "table" then
+            for _, connection in ipairs(conns) do
+                if type(connection.Fire) == "function" then
+                    local fired = pcall(connection.Fire, connection)
+                    clicked = clicked or fired
+                elseif type(connection.Function) == "function" then
+                    local fired = pcall(connection.Function)
+                    clicked = clicked or fired
                 end
             end
         end
@@ -963,10 +1018,112 @@ local function confirmCandyCollection()
     if not clicked and type(firesignal) == "function" then
         clicked = pcall(firesignal, yes.MouseButton1Click)
     end
+    -- Fallback for environments without signal access: real UI input.
     if not clicked then
-        clicked = pcall(function() yes:Activate() end)
+        local p, sz = yes.AbsolutePosition, yes.AbsoluteSize
+        local x, y = math.floor(p.X + sz.X / 2), math.floor(p.Y + sz.Y / 2)
+        if sz.X > 0 and sz.Y > 0 then
+            clicked = pcall(function()
+                VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+                VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+            end)
+        end
     end
-    if clicked then lastCandyConfirmAt = os.clock() end
+    if not clicked then clicked = pcall(function() yes:Activate() end) end
+    lastCandyConfirmAt = os.clock()
+    if clicked then
+        candyStatus("Đã gửi lệnh Yes để nhận kẹo; chờ game xử lý")
+    else
+        candyStatus("Không nhấn được Yes; kiểm tra hỗ trợ input của executor")
+    end
+end
+
+local function candyFactory()
+    local pt = LocalPlayer:FindFirstChild("PlayerTycoon")
+    if pt and typeof(pt.Value) == "Instance" and pt.Value.Parent then
+        return pt.Value
+    end
+    return getPlayerFactory()
+end
+
+local function candyStoredCount(machine)
+    local model = machine:FindFirstChild("Model") or machine
+    local counter = model:FindFirstChild("CounterPart", true)
+    local tracker = counter and counter:FindFirstChild("CandyTracker", true)
+    local amount = tracker and tracker:FindFirstChild("Amount", true)
+    if not (amount and (amount:IsA("TextLabel") or amount:IsA("TextButton"))) then
+        return nil -- Unknown GUI structure: try activation at a safe interval.
+    end
+    local text = tostring(amount.Text or ""):gsub(",", "")
+    local number, suffix = text:match("(%d+%.?%d*)%s*([kKmM]?)")
+    local value = tonumber(number)
+    if value and (suffix == "k" or suffix == "K") then value = value * 1e3 end
+    if value and (suffix == "m" or suffix == "M") then value = value * 1e6 end
+    return value
+end
+
+local function activateCandyPrompt(machine)
+    local model = machine:FindFirstChild("Model") or machine
+    local internal = model:FindFirstChild("Internal", true)
+    local prompt = internal and internal:FindFirstChildWhichIsA("ProximityPrompt", true)
+        or model:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if not prompt then return false, "Không tìm thấy ProximityPrompt ở " .. machine.Name end
+    if not prompt.Enabled then return false, "Prompt bị tắt ở " .. machine.Name end
+    local activated = false
+    if type(fireproximityprompt) == "function" then
+        -- Allow collection from the base without forcibly teleporting the user.
+        pcall(function() prompt.MaxActivationDistance = 2000 end)
+        activated = pcall(fireproximityprompt, prompt)
+    else
+        -- Roblox API fallback may only work while standing near the machine.
+        local hrp = getHRP()
+        local part = prompt.Parent
+        if part and not part:IsA("BasePart") then
+            part = part:FindFirstAncestorWhichIsA("BasePart")
+        end
+        local near = hrp and part
+            and (hrp.Position - part.Position).Magnitude <= prompt.MaxActivationDistance
+        if near then
+            activated = pcall(function()
+                prompt:InputHoldBegin()
+                task.wait(math.max(0.05, prompt.HoldDuration + 0.05))
+                prompt:InputHoldEnd()
+            end)
+        else
+            return false, "Thiếu fireproximityprompt; hãy đứng gần máy kẹo"
+        end
+    end
+    if not activated then return false, "Không kích hoạt được prompt ở " .. machine.Name end
+    return true, "Đã kích hoạt " .. machine.Name .. "; chờ hộp thoại Yes"
+end
+
+local function triggerCandyCollection()
+    if not candyEnabled or not Hub.Alive then return end
+    local _, dialogVisible = candyDialog()
+    if dialogVisible then return end
+    local tycoon = candyFactory()
+    if not tycoon then
+        candyStatus("Chưa xác định được base của bạn")
+        return
+    end
+    local machines = {}
+    for _, part in ipairs(tycoon:GetDescendants()) do
+        if part:IsA("Model") and candyItemNames[part.Name] then
+            local count = candyStoredCount(part)
+            if count == nil or count > 0 then
+                machines[#machines + 1] = part
+            end
+        end
+    end
+    if #machines == 0 then
+        candyStatus("Không tìm thấy máy chứa kẹo có thể thu; cần đặt Candy Center/Factory/Metropolis")
+        return
+    end
+    candyNextIndex = (candyNextIndex % #machines) + 1
+    local selected = machines[candyNextIndex]
+    local ok, message = activateCandyPrompt(selected)
+    if ok then lastCandyRequestAt = os.clock() end
+    candyStatus(message)
 end
 
 MainTab:CreateToggle({
@@ -974,10 +1131,16 @@ MainTab:CreateToggle({
     CurrentValue = false,
     Flag = "AutoCollectCandy",
     Callback = function(enabled)
-        setLoop("autoCollectCandy", enabled, 0.15, confirmCandyCollection)
+        candyEnabled = enabled
+        lastCandyRequestAt = 0
+        lastCandyConfirmAt = 0
+        candyStatus(enabled and "Đang tìm máy kẹo trên base..." or "OFF")
+        -- Two loops: prompt confirmation must respond faster than furnace polling.
+        setLoop("autoCandyConfirm", enabled, 0.15, confirmCandyCollection)
+        setLoop("autoCandyMachines", enabled, 4.0, triggerCandyCollection)
     end,
 })
-MainTab:CreateLabel("Automatically selects Yes on Collect Candy popups; does not hunt for candy.")
+MainTab:CreateLabel("Tự kích hoạt máy Candy Center / Factory / Metropolis trên base và xác nhận Yes; không nhặt kẹo rơi ngoài bản đồ.")
 
 MainTab:CreateSection("Box Utilities")
 -- Auto Teleport to boxes
