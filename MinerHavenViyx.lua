@@ -873,7 +873,7 @@ for i = 1, 3 do
 end
 
 MainTab:CreateSection("Quick Automation")
-MainTab:CreateLabel("Remote-only actions. Smart rebirth and ore boost live in Auto Section.")
+MainTab:CreateLabel("Fast actions and prompt assistance. Smart rebirth and ore boost are in Auto Section.")
 MainTab:CreateToggle({
     Name = "Auto Rebirth",
     CurrentValue = false,
@@ -919,6 +919,65 @@ MainTab:CreateToggle({
         end)
     end,
 })
+
+-- MX6/A4 contribution: automatically confirms the game's "Collect Candy" prompt.
+-- This does NOT locate or physically pick up candy in the world.
+local lastCandyConfirmAt = 0
+local function confirmCandyCollection()
+    if not Hub.Alive or os.clock() - lastCandyConfirmAt < 0.4 then return end
+
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then return end
+    local gameGui = playerGui:FindFirstChild("GUI")
+    local prompts = playerGui:FindFirstChild("Prompts")
+        or (gameGui and gameGui:FindFirstChild("Prompts"))
+    local promptContainer = prompts and prompts:FindFirstChild("InputPrompt")
+    local prompt = (promptContainer and promptContainer:FindFirstChild("InputPrompt"))
+        or (gameGui and gameGui:FindFirstChild("InputPrompt")
+            and gameGui.InputPrompt:FindFirstChild("InputPrompt"))
+    if not (prompt and prompt:IsA("GuiObject") and prompt.Visible) then return end
+
+    local title = prompt:FindFirstChild("Title")
+    local yes = prompt:FindFirstChild("Yes")
+    if not (title and title:IsA("TextLabel") and yes and yes:IsA("GuiButton") and yes.Visible) then
+        return
+    end
+    local promptText = string.lower(title.Text or "")
+    if not (string.find(promptText, "collect", 1, true)
+        and string.find(promptText, "candy", 1, true)) then
+        return
+    end
+
+    -- Prefer the same click hooks as MX6; fallback to Roblox GuiButton:Activate().
+    local clicked = false
+    if type(getconnections) == "function" then
+        local ok, connections = pcall(getconnections, yes.MouseButton1Click)
+        if ok and type(connections) == "table" then
+            for _, conn in ipairs(connections) do
+                if type(conn.Function) == "function" then
+                    clicked = pcall(conn.Function) or clicked
+                end
+            end
+        end
+    end
+    if not clicked and type(firesignal) == "function" then
+        clicked = pcall(firesignal, yes.MouseButton1Click)
+    end
+    if not clicked then
+        clicked = pcall(function() yes:Activate() end)
+    end
+    if clicked then lastCandyConfirmAt = os.clock() end
+end
+
+MainTab:CreateToggle({
+    Name = "Auto Collect Candy",
+    CurrentValue = false,
+    Flag = "AutoCollectCandy",
+    Callback = function(enabled)
+        setLoop("autoCollectCandy", enabled, 0.15, confirmCandyCollection)
+    end,
+})
+MainTab:CreateLabel("Automatically selects Yes on Collect Candy popups; does not hunt for candy.")
 
 MainTab:CreateSection("Box Utilities")
 -- Auto Teleport to boxes
@@ -1319,7 +1378,7 @@ do
         -- trackers
         trackOres = false, trackBoxes = false,
         -- boxes
-        farmBoxes = false, boxSpeed = 30, safetyTeleport = false, candyConfirm = false,
+        farmBoxes = false, boxSpeed = 30, safetyTeleport = false,
         selectedBox = "Regular", boxWait = 1,
         -- misc
         antiLeave = false, walk = 16, jump = 50,
