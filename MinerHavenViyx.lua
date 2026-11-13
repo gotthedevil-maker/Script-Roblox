@@ -1,9 +1,15 @@
 --[[
-    Miner's Haven by Viyx
-    - Rayfield (sirius.menu) UI, purple theme (press K to hide/show)
-    - Works with the new Jolt networking (Rebirth, Drop, Pulse, DestroyAll, Layouts)
-    - Boost tab: auto rebirth cycle + ore boost + layouts (feature set inspired by MX6's hub)
-    - Built-in diagnostics: Settings tab -> "Run Diagnostics" / "Dump Remotes"
+    MINER'S HAVEN BY VIYX  |  1.5  (November 2026)
+    Maintainer: Viyx
+    Source base: MinerHavenViyx.lua
+    Gameplay/reference integration: MX6Share.txt (MX6 & A4; credit retained)
+    New self-contained purple / charcoal GUI, no external UI downloads.
+    Hotkey: K (toggle hub), or on-screen V button when minimized.
+
+    Changes: removed Settings, NPC Teleport, Halloween tabs;
+    important threshold settings are available under Auto Section.
+    This script uses client-side game/executor APIs and cannot be
+    validated against live Roblox server behavior by an offline test.
 ]]
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -44,16 +50,572 @@ local function httpGet(url)
     error("HTTP request failed for " .. url)
 end
 
-----------------------------------------------------------------------
--- Load Rayfield
-----------------------------------------------------------------------
-local okLib, Rayfield = pcall(function()
-    return loadstring(httpGet("https://sirius.menu/rayfield"))()
-end)
-if not okLib or type(Rayfield) ~= "table" then
-    warn("[MH] Could not load Rayfield. Your executor may block HttpGet/loadstring:", Rayfield)
-    return
-end
+-- ================================================================
+-- VIYX UI 1.5 | Self-contained, two-column purple/black dashboard
+-- Compatible with the Rayfield CreateTab/CreateToggle/etc. API used
+-- by the Viyx gameplay modules.  No remote UI library is executed.
+-- ================================================================
+local Rayfield = (function()
+    local UI = { Window = nil }
+    local UIS = game:GetService("UserInputService")
+    local TweenService = game:GetService("TweenService")
+    local P = {
+        bg = Color3.fromRGB(13, 12, 21), panel = Color3.fromRGB(22, 20, 33),
+        side = Color3.fromRGB(17, 16, 27), card = Color3.fromRGB(29, 26, 43),
+        field = Color3.fromRGB(37, 33, 54), hover = Color3.fromRGB(44, 37, 66),
+        border = Color3.fromRGB(59, 49, 82), accent = Color3.fromRGB(164, 108, 255),
+        accentDim = Color3.fromRGB(72, 49, 108), text = Color3.fromRGB(244, 239, 255),
+        muted = Color3.fromRGB(160, 151, 180), good = Color3.fromRGB(119, 222, 166),
+    }
+    local function new(class, props, parent)
+        local o = Instance.new(class)
+        for k, v in pairs(props or {}) do o[k] = v end
+        if parent then o.Parent = parent end
+        return o
+    end
+    local function round(parent, r)
+        return new("UICorner", { CornerRadius = UDim.new(0, r or 9) }, parent)
+    end
+    local function outline(parent, color, weight)
+        return new("UIStroke", { Color = color or P.border, Thickness = weight or 1,
+            Transparency = 0.12, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, parent)
+    end
+    local function pad(parent, top, right, bottom, left)
+        return new("UIPadding", { PaddingTop = UDim.new(0, top or 0),
+            PaddingRight = UDim.new(0, right or 0), PaddingBottom = UDim.new(0, bottom or 0),
+            PaddingLeft = UDim.new(0, left or 0) }, parent)
+    end
+    local function txt(parent, value, size, color, bold, extra)
+        local cfg = { BackgroundTransparency = 1, Text = tostring(value or ""),
+            Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham,
+            TextSize = size or 13, TextColor3 = color or P.text,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center,
+            BorderSizePixel = 0 }
+        for k, v in pairs(extra or {}) do cfg[k] = v end
+        return new("TextLabel", cfg, parent)
+    end
+    local function tw(obj, props, seconds)
+        if obj and obj.Parent then
+            TweenService:Create(obj, TweenInfo.new(seconds or 0.16, Enum.EasingStyle.Quad,
+                Enum.EasingDirection.Out), props):Play()
+        end
+    end
+    local function safeCall(fn, ...)
+        if type(fn) ~= "function" then return end
+        local ok, err = pcall(fn, ...)
+        if not ok then warn("[Viyx UI] Callback:", err) end
+    end
+    local function binding(signal, fn)
+        local c = signal:Connect(fn)
+        table.insert(Hub.Conns, c)
+        return c
+    end
+
+    function UI:Notify(data)
+        local w = self.Window
+        if not (w and w.Screen and w.Screen.Parent) then
+            warn("[Viyx] " .. tostring(data.Title or "Info") .. ": " .. tostring(data.Content or ""))
+            return
+        end
+        local holder = w.Notifications
+        local toast = new("Frame", { BackgroundColor3 = P.card, BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 0, 82) }, holder)
+        round(toast, 10); outline(toast, P.accentDim)
+        new("Frame", { Size = UDim2.new(0, 3, 1, -16), Position = UDim2.fromOffset(8, 8),
+            BorderSizePixel = 0, BackgroundColor3 = P.accent }, toast)
+        txt(toast, data.Title or "Viyx", 13, P.text, true, {
+            Position = UDim2.fromOffset(21, 8), Size = UDim2.new(1, -30, 0, 20) })
+        txt(toast, data.Content or "", 11, P.muted, false, {
+            Position = UDim2.fromOffset(21, 29), Size = UDim2.new(1, -32, 1, -34),
+            TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top })
+        task.delay(math.clamp(tonumber(data.Duration) or 5, 2, 30), function()
+            if toast.Parent then toast:Destroy() end
+        end)
+    end
+    function UI:Destroy()
+        if self.Window and self.Window.Screen then self.Window.Screen:Destroy() end
+        self.Window = nil
+    end
+    function UI:LoadConfiguration() end
+
+    function UI:CreateWindow(conf)
+        self:Destroy()
+        local parent = LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui")
+        if type(gethui) == "function" then
+            local ok, gui = pcall(gethui)
+            if ok and gui then parent = gui end
+        end
+        local screen = new("ScreenGui", { Name = "ViyxMinerHaven15", ResetOnSpawn = false,
+            DisplayOrder = 175, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+            IgnoreGuiInset = true }, parent)
+        local surface = new("Frame", { Name = "Window", AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(1010, 670),
+            BorderSizePixel = 0, BackgroundColor3 = P.bg, ClipsDescendants = true }, screen)
+        round(surface, 13); outline(surface, P.border, 1.25)
+        local scale = new("UIScale", { Scale = 1 }, surface)
+        local function rescale()
+            local camera = workspace.CurrentCamera
+            local v = camera and camera.ViewportSize or Vector2.new(1200, 800)
+            scale.Scale = math.clamp(math.min((v.X - 16) / 1010, (v.Y - 16) / 670), 0.45, 1.0)
+        end
+        rescale()
+        if workspace.CurrentCamera then
+            binding(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), rescale)
+        end
+        local side = new("Frame", { BackgroundColor3 = P.side, BorderSizePixel = 0,
+            Size = UDim2.new(0, 205, 1, 0) }, surface)
+        new("Frame", { Position = UDim2.new(1, -1, 0, 0), Size = UDim2.new(0, 1, 1, 0),
+            BackgroundColor3 = P.border, BorderSizePixel = 0 }, side)
+        local logo = new("Frame", { BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(18, 20), Size = UDim2.new(1, -30, 0, 54) }, side)
+        local emblem = new("Frame", { Size = UDim2.fromOffset(34, 34),
+            Position = UDim2.fromOffset(0, 2), BackgroundColor3 = P.accentDim,
+            BorderSizePixel = 0 }, logo)
+        round(emblem, 10)
+        txt(emblem, "V", 19, P.text, true, { Size = UDim2.fromScale(1, 1), TextXAlignment = Enum.TextXAlignment.Center })
+        txt(logo, "VIYX", 17, P.text, true, {
+            Position = UDim2.fromOffset(45, 0), Size = UDim2.new(1, -48, 0, 26) })
+        txt(logo, "MINER'S HAVEN", 9, P.muted, true, {
+            Position = UDim2.fromOffset(45, 24), Size = UDim2.new(1, -46, 0, 18) })
+        new("Frame", { Position = UDim2.fromOffset(16, 83), Size = UDim2.new(1, -32, 0, 1),
+            BackgroundColor3 = P.border, BorderSizePixel = 0 }, side)
+        local nav = new("ScrollingFrame", { Name = "Navigation", BackgroundTransparency = 1,
+            BorderSizePixel = 0, Position = UDim2.fromOffset(8, 101), Size = UDim2.new(1, -16, 1, -166),
+            ScrollBarThickness = 2, ScrollBarImageColor3 = P.accentDim,
+            CanvasSize = UDim2.fromOffset(0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y }, side)
+        pad(nav, 4, 5, 12, 5)
+        new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, nav)
+        local footer = new("Frame", { Position = UDim2.new(0, 12, 1, -57),
+            Size = UDim2.new(1, -24, 0, 43), BackgroundColor3 = P.card,
+            BorderSizePixel = 0 }, side)
+        round(footer, 8)
+        txt(footer, "VIYX  /  v1.5", 11, P.text, true, {
+            Position = UDim2.fromOffset(10, 6), Size = UDim2.new(1, -20, 0, 17) })
+        txt(footer, "MX6 + A4 acknowledged", 9, P.muted, false, {
+            Position = UDim2.fromOffset(10, 23), Size = UDim2.new(1, -20, 0, 14) })
+
+        local right = new("Frame", { Position = UDim2.fromOffset(205, 0),
+            Size = UDim2.new(1, -205, 1, 0), BackgroundTransparency = 1 }, surface)
+        local bar = new("Frame", { BackgroundColor3 = P.panel, BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 0, 65) }, right)
+        txt(bar, "Dashboard", 18, P.text, true, { Name = "PageTitle",
+            Position = UDim2.fromOffset(22, 9), Size = UDim2.new(1, -175, 0, 27) })
+        txt(bar, "Miners Haven automation  •  Viyx Edition", 10, P.muted, false, {
+            Position = UDim2.fromOffset(22, 36), Size = UDim2.new(1, -175, 0, 16) })
+        local version = new("TextLabel", { Text = "v1.5", Font = Enum.Font.GothamBold,
+            TextSize = 11, TextColor3 = P.accent, TextXAlignment = Enum.TextXAlignment.Center,
+            BackgroundColor3 = P.accentDim, BorderSizePixel = 0,
+            Position = UDim2.new(1, -120, 0, 17), Size = UDim2.fromOffset(45, 28) }, bar)
+        round(version, 7)
+        local minimize = new("TextButton", { Text = "—", Font = Enum.Font.GothamBold,
+            TextSize = 18, TextColor3 = P.muted, BackgroundTransparency = 1,
+            Position = UDim2.new(1, -72, 0, 16), Size = UDim2.fromOffset(30, 30) }, bar)
+        local close = new("TextButton", { Text = "×", Font = Enum.Font.GothamBold,
+            TextSize = 21, TextColor3 = P.muted, BackgroundTransparency = 1,
+            Position = UDim2.new(1, -39, 0, 16), Size = UDim2.fromOffset(30, 30) }, bar)
+        new("Frame", { Position = UDim2.fromOffset(0, 64), Size = UDim2.new(1, 0, 0, 1),
+            BorderSizePixel = 0, BackgroundColor3 = P.border }, bar)
+        local pages = new("Frame", { Position = UDim2.fromOffset(0, 65),
+            Size = UDim2.new(1, 0, 1, -65), BackgroundTransparency = 1 }, right)
+        local notifications = new("Frame", { Name = "Notifications", AnchorPoint = Vector2.new(1, 1),
+            Position = UDim2.new(1, -16, 1, -16), Size = UDim2.fromOffset(300, 0),
+            AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1 }, screen)
+        new("UIListLayout", { Padding = UDim.new(0, 7), VerticalAlignment = Enum.VerticalAlignment.Bottom,
+            SortOrder = Enum.SortOrder.LayoutOrder }, notifications)
+
+        local launcher = new("TextButton", { Visible = false, Text = "V", TextColor3 = P.text,
+            Font = Enum.Font.GothamBold, TextSize = 21, BackgroundColor3 = P.accentDim,
+            Position = UDim2.new(0, 18, 0.5, -25), Size = UDim2.fromOffset(50, 50),
+            BorderSizePixel = 0 }, screen)
+        round(launcher, 14); outline(launcher, P.accent)
+        local window = { Screen = screen, Surface = surface, Pages = pages,
+            Nav = nav, Title = bar.PageTitle, Notifications = notifications,
+            Tabs = {}, Selected = nil, Launcher = launcher }
+        self.Window = window
+        local function show(state)
+            surface.Visible = state
+            launcher.Visible = not state
+        end
+        binding(minimize.MouseButton1Click, function() show(false) end)
+        binding(launcher.MouseButton1Click, function() show(true) end)
+        binding(close.MouseButton1Click, function()
+            if Hub.Unload then Hub.Unload() else UI:Destroy() end
+        end)
+        binding(UIS.InputBegan, function(input, processed)
+            if processed then return end
+            if input.KeyCode == Enum.KeyCode.K then show(not surface.Visible) end
+        end)
+        -- Dragging via top bar (except the close/minimize controls).
+        local dragging, dragStart, startPos = false, nil, nil
+        binding(bar.InputBegan, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or
+                input.UserInputType == Enum.UserInputType.Touch then
+                dragging, dragStart, startPos = true, input.Position, surface.Position
+            end
+        end)
+        binding(UIS.InputEnded, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or
+                input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+        end)
+        binding(UIS.InputChanged, function(input)
+            if dragging and dragStart and (input.UserInputType == Enum.UserInputType.MouseMovement or
+                input.UserInputType == Enum.UserInputType.Touch) then
+                local delta = input.Position - dragStart
+                surface.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X / scale.Scale,
+                    startPos.Y.Scale, startPos.Y.Offset + delta.Y / scale.Scale)
+            end
+        end)
+        return window
+    end
+
+    local sectionIcons = { Main = "◆", Boost = "⚡", Factory = "▤",
+        ["Box Farming"] = "◇", Vendors = "▦", Teleport = "⌖",
+        Music = "♫", Misc = "◈", ["Esp Egg"] = "◎" }
+    local tabNames = { Main = "Dashboard", Boost = "Auto Section",
+        Factory = "Factory", ["Box Farming"] = "Box Farming", Vendors = "Vendors",
+        Teleport = "Teleport", Music = "Music", Misc = "Player", ["Esp Egg"] = "Egg ESP" }
+    local function createControlBase(tab, height)
+        if not tab.CurrentCard then tab:CreateSection("Controls") end
+        local item = new("Frame", { BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, height), BorderSizePixel = 0,
+            LayoutOrder = tab.ElementCount + 1 }, tab.CurrentCard.Body)
+        tab.ElementCount = tab.ElementCount + 1
+        return item
+    end
+    local function decorateBtn(b, bg, stroke)
+        b.BackgroundColor3 = bg or P.field
+        b.BorderSizePixel = 0
+        round(b, 7); outline(b, stroke or P.border)
+    end
+    function UI.WindowDummy() end
+    -- Called on the returned window, not UI itself.
+    local tabMethods = {}
+    local windowMethods = {}
+    function windowMethods:ModifyTheme(_) end -- design palette is intentionally fixed
+    function windowMethods:CreateTab(name)
+        local label = tabNames[name] or name
+        local category = (name == "Main") and "OVERVIEW" or
+            (name == "Boost" or name == "Factory" or name == "Box Farming") and "AUTOMATION" or
+            (name == "Vendors" or name == "Teleport" or name == "Misc") and "UTILITIES" or "PERSONALIZATION"
+        if self.LastCategory ~= category then
+            local heading = txt(self.Nav, category, 9, P.muted, true, {
+                Size = UDim2.new(1, 0, 0, 22), LayoutOrder = #self.Tabs * 2 + 1 })
+            heading.TextXAlignment = Enum.TextXAlignment.Left
+            self.LastCategory = category
+        end
+        local b = new("TextButton", { Text = "", AutoButtonColor = false,
+            BackgroundColor3 = P.side, BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 0, 38), LayoutOrder = #self.Tabs * 2 + 2 }, self.Nav)
+        round(b, 8)
+        local accent = new("Frame", { BackgroundColor3 = P.accent, BorderSizePixel = 0,
+            Visible = false, Position = UDim2.fromOffset(0, 8), Size = UDim2.fromOffset(3, 22) }, b)
+        round(accent, 3)
+        txt(b, sectionIcons[name] or "◈", 16, P.muted, false, {
+            Name = "Icon", Position = UDim2.fromOffset(14, 0), Size = UDim2.fromOffset(23, 38) })
+        txt(b, label, 12, P.muted, true, { Name = "Label",
+            Position = UDim2.fromOffset(42, 0), Size = UDim2.new(1, -46, 1, 0) })
+        local scroll = new("ScrollingFrame", { Name = name:gsub("%W", ""),
+            Visible = false, BackgroundTransparency = 1, BorderSizePixel = 0,
+            Size = UDim2.fromScale(1, 1), ScrollBarThickness = 4,
+            ScrollingDirection = Enum.ScrollingDirection.Y, ScrollBarImageColor3 = P.accentDim,
+            CanvasSize = UDim2.fromOffset(0, 0), ClipsDescendants = true }, self.Pages)
+        local cols, listLayouts = {}, {}
+        for i = 1, 2 do
+            local col = new("Frame", { BackgroundTransparency = 1,
+                Position = UDim2.new((i - 1) * 0.5, i == 1 and 16 or 6, 0, 16),
+                Size = UDim2.new(0.5, -24, 0, 0), AutomaticSize = Enum.AutomaticSize.Y }, scroll)
+            pad(col, 0, 0, 3, 0)
+            listLayouts[i] = new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder,
+                Padding = UDim.new(0, 12) }, col)
+            cols[i] = col
+        end
+        local function updateCanvas()
+            scroll.CanvasSize = UDim2.new(0, 0, 0, math.max(
+                listLayouts[1].AbsoluteContentSize.Y, listLayouts[2].AbsoluteContentSize.Y) + 44)
+        end
+        for i = 1, 2 do
+            binding(listLayouts[i]:GetPropertyChangedSignal("AbsoluteContentSize"), updateCanvas)
+        end
+        local tab = { Parent = self, Name = name, Button = b, Scroll = scroll,
+            Columns = cols, CardCount = 0, ElementCount = 0, CurrentCard = nil,
+            Searchable = {} }
+        table.insert(self.Tabs, tab)
+        local function select()
+            self.Selected = tab
+            self.Title.Text = label
+            for _, t in ipairs(self.Tabs) do
+                local active = t == tab
+                t.Scroll.Visible = active
+                tw(t.Button, { BackgroundColor3 = active and P.accentDim or P.side })
+                t.Button.Icon.TextColor3 = active and P.accent or P.muted
+                t.Button.Label.TextColor3 = active and P.text or P.muted
+                local marker = t.Button:FindFirstChildOfClass("Frame")
+                if marker then marker.Visible = active end
+            end
+        end
+        binding(b.MouseButton1Click, select)
+        if not self.Selected then select() end
+        return setmetatable(tab, { __index = tabMethods })
+    end
+    -- tabMethods are forward declared before window:CreateTab is first called.
+    function windowMethods.__index(_, key) return windowMethods[key] end
+    -- Return window with the CreateTab method attached.
+    local baseCreate = UI.CreateWindow
+    function UI:CreateWindow(conf)
+        local w = baseCreate(self, conf)
+        return setmetatable(w, { __index = windowMethods })
+    end
+
+    function tabMethods:CreateSection(title)
+        self.CardCount = self.CardCount + 1
+        local col = self.Columns[(self.CardCount - 1) % 2 + 1]
+        local card = new("Frame", { BackgroundColor3 = P.card, BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            LayoutOrder = self.CardCount }, col)
+        round(card, 10); outline(card, P.border)
+        pad(card, 13, 12, 13, 12)
+        new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder,
+            Padding = UDim.new(0, 9) }, card)
+        local header = new("Frame", { BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 24), LayoutOrder = 1 }, card)
+        new("Frame", { BackgroundColor3 = P.accent, BorderSizePixel = 0,
+            Size = UDim2.fromOffset(3, 16), Position = UDim2.fromOffset(0, 4) }, header)
+        txt(header, title, 12, P.text, true, {
+            Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -12, 1, 0) })
+        local body = new("Frame", { Name = "Controls", BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            LayoutOrder = 2 }, card)
+        new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder,
+            Padding = UDim.new(0, 5) }, body)
+        self.CurrentCard = { Frame = card, Body = body }
+        return card
+    end
+    function tabMethods:CreateLabel(value)
+        local root = createControlBase(self, 36)
+        local label = txt(root, value, 11, P.muted, false, {
+            Size = UDim2.fromScale(1, 1), TextWrapped = true,
+            TextYAlignment = Enum.TextYAlignment.Top })
+        return { Set = function(_, text) label.Text = tostring(text or "") end }
+    end
+    function tabMethods:CreateToggle(opt)
+        local root = createControlBase(self, 45)
+        local click = new("TextButton", { Text = "", AutoButtonColor = false,
+            BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1) }, root)
+        txt(click, opt.Name, 11, P.text, true, {
+            Position = UDim2.fromOffset(1, 0), Size = UDim2.new(1, -56, 1, 0), TextWrapped = true })
+        local sw = new("Frame", { Position = UDim2.new(1, -47, 0.5, -12),
+            Size = UDim2.fromOffset(46, 24), BackgroundColor3 = P.field,
+            BorderSizePixel = 0 }, click)
+        round(sw, 12); outline(sw, P.border)
+        local knob = new("Frame", { Size = UDim2.fromOffset(17, 17),
+            Position = UDim2.fromOffset(4, 3), BackgroundColor3 = P.muted,
+            BorderSizePixel = 0 }, sw)
+        round(knob, 9)
+        local current = not not opt.CurrentValue
+        local function set(value)
+            value = not not value
+            if current == value then return end
+            current = value
+            tw(sw, { BackgroundColor3 = value and P.accent or P.field })
+            tw(knob, { Position = UDim2.fromOffset(value and 25 or 4, 3),
+                BackgroundColor3 = value and P.text or P.muted })
+            safeCall(opt.Callback, value)
+        end
+        current = not current
+        set(not not opt.CurrentValue)
+        binding(click.MouseButton1Click, function() set(not current) end)
+        return { Set = function(_, value) set(value) end, Get = function() return current end }
+    end
+    function tabMethods:CreateButton(opt)
+        local root = createControlBase(self, 42)
+        local btn = new("TextButton", { Text = opt.Name or "Action", AutoButtonColor = false,
+            Font = Enum.Font.GothamBold, TextSize = 11, TextColor3 = P.text,
+            Size = UDim2.new(1, 0, 1, -3) }, root)
+        decorateBtn(btn, P.field)
+        binding(btn.MouseEnter, function() tw(btn, { BackgroundColor3 = P.hover }) end)
+        binding(btn.MouseLeave, function() tw(btn, { BackgroundColor3 = P.field }) end)
+        binding(btn.MouseButton1Click, function()
+            task.spawn(function() safeCall(opt.Callback) end)
+        end)
+        return { Set = function(_, name) btn.Text = tostring(name) end }
+    end
+    function tabMethods:CreateInput(opt)
+        local root = createControlBase(self, 75)
+        txt(root, opt.Name or "Input", 11, P.text, true, {
+            Size = UDim2.new(1, 0, 0, 27), TextWrapped = true })
+        local input = new("TextBox", { Name = "Field", Text = tostring(opt.CurrentValue or ""),
+            ClearTextOnFocus = false, Font = Enum.Font.Gotham, TextSize = 12,
+            TextColor3 = P.text, PlaceholderColor3 = P.muted,
+            PlaceholderText = opt.PlaceholderText or "",
+            BackgroundColor3 = P.field, BorderSizePixel = 0,
+            Position = UDim2.fromOffset(0, 31), Size = UDim2.new(1, 0, 0, 36),
+            TextXAlignment = Enum.TextXAlignment.Left }, root)
+        round(input, 7); outline(input, P.border); pad(input, 0, 9, 0, 9)
+        binding(input.FocusLost, function()
+            safeCall(opt.Callback, input.Text)
+            if opt.RemoveTextAfterFocusLost then input.Text = "" end
+        end)
+        return { Set = function(_, value) input.Text = tostring(value or "") end,
+            Get = function() return input.Text end }
+    end
+    function tabMethods:CreateDropdown(opt)
+        local root = createControlBase(self, 75)
+        txt(root, opt.Name or "Select", 11, P.text, true, {
+            Size = UDim2.new(1, 0, 0, 27), TextWrapped = true })
+        local action = new("TextButton", { Text = "", AutoButtonColor = false,
+            Size = UDim2.new(1, 0, 0, 36), Position = UDim2.fromOffset(0, 31) }, root)
+        decorateBtn(action, P.field)
+        local active = txt(action, "None Selected", 11, P.muted, false, {
+            Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -35, 1, 0),
+            TextTruncate = Enum.TextTruncate.AtEnd })
+        txt(action, "⌄", 17, P.accent, false, {
+            Position = UDim2.new(1, -26, 0, 0), Size = UDim2.fromOffset(20, 36),
+            TextXAlignment = Enum.TextXAlignment.Center })
+        local menu = new("ScrollingFrame", { BackgroundColor3 = P.field,
+            BorderSizePixel = 0, Visible = false, Position = UDim2.fromOffset(0, 71),
+            Size = UDim2.new(1, 0, 0, 0), ScrollBarThickness = 3,
+            ScrollBarImageColor3 = P.accent, CanvasSize = UDim2.fromOffset(0, 0) }, root)
+        round(menu, 7); outline(menu, P.border)
+        pad(menu, 4, 5, 4, 5)
+        local menuLayout = new("UIListLayout", { Padding = UDim.new(0, 3),
+            SortOrder = Enum.SortOrder.LayoutOrder }, menu)
+        local opts, selected, opened = {}, {}, false
+        local multi = not not opt.MultipleOptions
+        local function selectedValues()
+            local values, seen = {}, {}
+            for _, option in ipairs(opts) do
+                if selected[option] then values[#values + 1] = option; seen[option] = true end
+            end
+            for option, yes in pairs(selected) do
+                if yes and not seen[option] then values[#values + 1] = option end
+            end
+            return values
+        end
+        local function emit()
+            local values = selectedValues()
+            if multi then safeCall(opt.Callback, values)
+            else safeCall(opt.Callback, { values[1] }) end
+        end
+        local function refreshTitle()
+            local values = selectedValues()
+            if #values == 0 then
+                active.Text = "None Selected"; active.TextColor3 = P.muted
+            else
+                active.Text = table.concat(values, ", "); active.TextColor3 = P.text
+            end
+        end
+        local function updateSize()
+            menu.Size = UDim2.new(1, 0, 0, math.min(#opts, 6) * 34 + 8)
+            menu.CanvasSize = UDim2.fromOffset(0, #opts * 34 + 8)
+            root.Size = UDim2.new(1, 0, 0, opened and (77 + math.min(#opts, 6) * 34 + 8) or 75)
+            menu.Visible = opened
+        end
+        local function rebuild()
+            for _, c in ipairs(menu:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+            for i, option in ipairs(opts) do
+                local label = option
+                local btn = new("TextButton", { Name = "Option", Text = "",
+                    LayoutOrder = i, AutoButtonColor = false,
+                    BackgroundColor3 = selected[option] and P.accentDim or P.field,
+                    BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 31) }, menu)
+                round(btn, 5)
+                local mark = txt(btn, selected[option] and "●" or "○", 12,
+                    selected[option] and P.accent or P.muted, true, {
+                    Position = UDim2.fromOffset(6, 0), Size = UDim2.fromOffset(16, 31) })
+                txt(btn, label, 11, P.text, false, {
+                    Position = UDim2.fromOffset(25, 0), Size = UDim2.new(1, -27, 1, 0),
+                    TextTruncate = Enum.TextTruncate.AtEnd })
+                binding(btn.MouseButton1Click, function()
+                    if multi then selected[label] = not selected[label]
+                    else selected = { [label] = true }; opened = false end
+                    refreshTitle(); rebuild(); updateSize(); emit()
+                end)
+            end
+            updateSize()
+        end
+        local function set(val, call)
+            local nextSelected = {}
+            if type(val) == "table" then
+                for _, v in ipairs(val) do nextSelected[tostring(v)] = true end
+            elseif val ~= nil then nextSelected[tostring(val)] = true end
+            selected = nextSelected
+            refreshTitle()
+            rebuild()
+            if call then emit() end
+        end
+        local function refresh(list)
+            opts = {}
+            for _, val in ipairs(list or {}) do opts[#opts + 1] = tostring(val) end
+            rebuild(); refreshTitle()
+        end
+        binding(action.MouseButton1Click, function()
+            opened = not opened
+            updateSize()
+        end)
+        refresh(opt.Options or {})
+        set(opt.CurrentOption or {}, false)
+        return { Set = function(_, value) set(value, true) end,
+            Refresh = function(_, values) refresh(values) end }
+    end
+    function tabMethods:CreateSlider(opt)
+        local root = createControlBase(self, 72)
+        txt(root, opt.Name or "Slider", 11, P.text, true, {
+            Size = UDim2.new(1, -64, 0, 28), TextWrapped = true })
+        local readout = txt(root, "", 11, P.accent, true, {
+            Position = UDim2.new(1, -66, 0, 0), Size = UDim2.new(0, 66, 0, 28),
+            TextXAlignment = Enum.TextXAlignment.Right })
+        local track = new("Frame", { Position = UDim2.fromOffset(5, 46),
+            Size = UDim2.new(1, -10, 0, 5), BackgroundColor3 = P.field,
+            BorderSizePixel = 0 }, root)
+        round(track, 3)
+        local fill = new("Frame", { Size = UDim2.fromScale(0, 1),
+            BackgroundColor3 = P.accent, BorderSizePixel = 0 }, track)
+        round(fill, 3)
+        local handle = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.fromOffset(14, 14), Position = UDim2.fromScale(0, 0.5),
+            BackgroundColor3 = P.text, BorderSizePixel = 0 }, track)
+        round(handle, 7); outline(handle, P.accent)
+        local hit = new("TextButton", { Text = "", BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 28), Position = UDim2.new(0, 0, 0.5, -14) }, track)
+        local lo = tonumber(opt.Range and opt.Range[1]) or 0
+        local hi = math.max(lo + 1e-6, tonumber(opt.Range and opt.Range[2]) or 100)
+        local step = math.max(1e-6, tonumber(opt.Increment) or 1)
+        local current = lo
+        local function set(v, send)
+            local quant = math.floor((math.clamp(tonumber(v) or lo, lo, hi) - lo) / step + 0.5) * step + lo
+            current = math.clamp(quant, lo, hi)
+            local ratio = (current - lo) / (hi - lo)
+            fill.Size = UDim2.fromScale(ratio, 1)
+            handle.Position = UDim2.fromScale(ratio, 0.5)
+            readout.Text = string.format("%g", current) .. (opt.Suffix and " " .. opt.Suffix or "")
+            if send then safeCall(opt.Callback, current) end
+        end
+        set(opt.CurrentValue or lo, false)
+        local dragging = false
+        local function update(x)
+            if track.AbsoluteSize.X > 0 then
+                set(lo + math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1) * (hi - lo), true)
+            end
+        end
+        binding(hit.InputBegan, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or
+                input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true; update(input.Position.X)
+            end
+        end)
+        binding(UIS.InputChanged, function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or
+                input.UserInputType == Enum.UserInputType.Touch) then update(input.Position.X) end
+        end)
+        binding(UIS.InputEnded, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or
+                input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+        end)
+        return { Set = function(_, value) set(value, true) end, Get = function() return current end }
+    end
+    return UI
+end)()
+
 
 local function notify(title, content, duration)
     pcall(function()
@@ -83,7 +645,7 @@ local function setLoop(key, enabled, interval, fn)
     local token = loops[key]
     if not enabled then return end
     task.spawn(function()
-        while loops[key] == token do
+        while Hub.Alive and loops[key] == token do
             local ok, err = pcall(fn)
             if not ok then warn("[MH] loop '" .. key .. "' error:", err) end
             task.wait(interval)
@@ -91,8 +653,9 @@ local function setLoop(key, enabled, interval, fn)
     end)
 end
 
-local remoteCache = {}
+local remoteCache, missingRemoteAt = {}, {}
 local function findRemote(name)
+    if missingRemoteAt[name] and os.clock() - missingRemoteAt[name] < 3 then return nil end
     local cached = remoteCache[name]
     if cached and cached.Parent then return cached end
     local function search(root)
@@ -109,6 +672,7 @@ local function findRemote(name)
         remoteCache[name] = r
         return r
     end
+    missingRemoteAt[name] = os.clock()
     return nil
 end
 
@@ -128,7 +692,11 @@ local JOLT_METHODS = {
 local Jolt
 do
     local ok, mod = pcall(function()
-        return require(RS:WaitForChild("Modules", 10).Networking.Jolt)
+        local modules = RS:WaitForChild("Modules", 15)
+        local networking = modules and modules:WaitForChild("Networking", 10)
+        local module = networking and networking:WaitForChild("Jolt", 10)
+        assert(module, "ReplicatedStorage.Modules.Networking.Jolt is unavailable")
+        return require(module)
     end)
     if ok and type(mod) == "table" and type(mod.Client) == "function" then
         Jolt = mod
@@ -156,8 +724,9 @@ local function callRemote(name, ...)
     local method = JOLT_METHODS[name]
     if method then
         local ch = joltChannel(name)
-        if ch then
-            return pcall(ch[method], ch, ...)
+        if ch and type(ch[method]) == "function" then
+            local ok, result, extra = pcall(ch[method], ch, ...)
+            if ok then return true, result, extra end
         end
     end
     local r = findRemote(name)
@@ -238,71 +807,17 @@ local function getPlayerFactory()
 end
 
 ----------------------------------------------------------------------
--- Window + Tabs
+-- Create dashboard pages (two-column responsive-style cards)
 ----------------------------------------------------------------------
-local PurpleTheme = {
-    TextColor = Color3.fromRGB(245, 240, 255),
-
-    Background = Color3.fromRGB(24, 18, 38),
-    Topbar = Color3.fromRGB(40, 28, 66),
-    Shadow = Color3.fromRGB(14, 10, 24),
-
-    NotificationBackground = Color3.fromRGB(30, 22, 50),
-    NotificationActionsBackground = Color3.fromRGB(200, 170, 255),
-
-    TabBackground = Color3.fromRGB(52, 38, 86),
-    TabStroke = Color3.fromRGB(90, 66, 140),
-    TabBackgroundSelected = Color3.fromRGB(150, 100, 240),
-    TabTextColor = Color3.fromRGB(225, 215, 245),
-    SelectedTabTextColor = Color3.fromRGB(255, 255, 255),
-
-    ElementBackground = Color3.fromRGB(36, 27, 58),
-    ElementBackgroundHover = Color3.fromRGB(48, 36, 78),
-    SecondaryElementBackground = Color3.fromRGB(28, 21, 46),
-    ElementStroke = Color3.fromRGB(78, 58, 122),
-    SecondaryElementStroke = Color3.fromRGB(60, 45, 96),
-
-    SliderBackground = Color3.fromRGB(110, 70, 190),
-    SliderProgress = Color3.fromRGB(150, 100, 245),
-    SliderStroke = Color3.fromRGB(176, 136, 255),
-
-    ToggleBackground = Color3.fromRGB(30, 22, 50),
-    ToggleEnabled = Color3.fromRGB(150, 100, 245),
-    ToggleDisabled = Color3.fromRGB(90, 80, 110),
-    ToggleEnabledStroke = Color3.fromRGB(180, 140, 255),
-    ToggleDisabledStroke = Color3.fromRGB(120, 108, 145),
-    ToggleEnabledOuterStroke = Color3.fromRGB(110, 84, 170),
-    ToggleDisabledOuterStroke = Color3.fromRGB(66, 54, 92),
-
-    DropdownSelected = Color3.fromRGB(52, 38, 86),
-    DropdownUnselected = Color3.fromRGB(34, 25, 56),
-
-    InputBackground = Color3.fromRGB(32, 24, 52),
-    InputStroke = Color3.fromRGB(90, 66, 140),
-    PlaceholderColor = Color3.fromRGB(170, 155, 200),
-}
-
-local Window = Rayfield:CreateWindow({
-    Name = "Miners Haven by Viyx",
-    LoadingTitle = "Miners Haven",
-    LoadingSubtitle = "by Viyx",
-    Theme = "Amethyst",  -- built-in purple, replaced below by PurpleTheme
-    ToggleUIKeybind = "K",
-    DisableRayfieldPrompts = true,
-    ConfigurationSaving = {
-        Enabled = false,  -- true = remember toggles, but they auto-start on inject
-        FolderName = "MinersHavenViyx",
-        FileName = "Config",
-    },
-    KeySystem = false,
-})
-pcall(function() Window.ModifyTheme(PurpleTheme) end)
-
+local Window = Rayfield:CreateWindow({ Name = "Miner's Haven by Viyx", Version = "1.5" })
 local MainTab     = Window:CreateTab("Main")
 local BoostTab    = Window:CreateTab("Boost")
-local SettingsTab = Window:CreateTab("Settings")
+local BoxTab      = Window:CreateTab("Box Farming")
 local FactoryTab  = Window:CreateTab("Factory")
-local NPCTab      = Window:CreateTab("NPC Teleport")
+local VendorTab   = Window:CreateTab("Vendors")
+local TeleportTab = Window:CreateTab("Teleport")
+local MiscTab     = Window:CreateTab("Misc")
+local MusicTab    = Window:CreateTab("Music")
 local EspTab      = Window:CreateTab("Esp Egg")
 
 ----------------------------------------------------------------------
@@ -321,7 +836,7 @@ local myFactory
 ----------------------------------------------------------------------
 -- MAIN TAB
 ----------------------------------------------------------------------
-MainTab:CreateSection("Main")
+MainTab:CreateSection("Quick Actions")
 
 -- Auto Press Z
 MainTab:CreateToggle({
@@ -342,6 +857,7 @@ MainTab:CreateToggle({
     end,
 })
 
+MainTab:CreateSection("Saved Layouts")
 -- Layout 1 / 2 / 3 loops
 for i = 1, 3 do
     MainTab:CreateToggle({
@@ -349,19 +865,21 @@ for i = 1, 3 do
         CurrentValue = false,
         Flag = "Layout" .. i,
         Callback = function(state)
-            setLoop("layout" .. i, state, 0.01, function()
+            setLoop("layout" .. i, state, 0.75, function()
                 callRemote("Layouts", "Load", "Layout" .. i)
             end)
         end,
     })
 end
 
+MainTab:CreateSection("Quick Automation")
+MainTab:CreateLabel("Remote-only actions. Smart rebirth and ore boost live in Auto Section.")
 MainTab:CreateToggle({
     Name = "Auto Rebirth",
     CurrentValue = false,
     Flag = "AutoRebirth",
     Callback = function(state)
-        setLoop("mainRebirth", state, 0.01, function()
+        setLoop("mainRebirth", state, 0.6, function()
             callRemote("Rebirth")
         end)
     end,
@@ -372,7 +890,7 @@ MainTab:CreateToggle({
     CurrentValue = false,
     Flag = "AutoDrop",
     Callback = function(state)
-        setLoop("autoDrop", state, 0.02, function()
+        setLoop("autoDrop", state, 0.2, function()
             callRemote("RemoteDrop")
         end)
     end,
@@ -384,7 +902,7 @@ for _, boxType in ipairs({ "Regular", "Unreal", "Inferno" }) do
         CurrentValue = false,
         Flag = "Auto" .. boxType .. "Box",
         Callback = function(state)
-            setLoop("box" .. boxType, state, 0.01, function()
+            setLoop("box" .. boxType, state, 1, function()
                 callRemote("MysteryBox", boxType)
             end)
         end,
@@ -396,12 +914,13 @@ MainTab:CreateToggle({
     CurrentValue = false,
     Flag = "AutoPulse",
     Callback = function(state)
-        setLoop("autoPulse", state, 0.01, function()
+        setLoop("autoPulse", state, 0.25, function()
             callRemote("Pulse")
         end)
     end,
 })
 
+MainTab:CreateSection("Box Utilities")
 -- Auto Teleport to boxes
 local function collectBoxes(folder, out)
     for _, obj in ipairs(folder:GetChildren()) do
@@ -449,7 +968,8 @@ MainTab:CreateToggle({
 ----------------------------------------------------------------------
 -- SETTINGS TAB
 ----------------------------------------------------------------------
-SettingsTab:CreateSection("Auto Layout Switch Settings")
+BoostTab:CreateSection("Cash Threshold & Layout Switching")
+BoostTab:CreateLabel("Alternative simple modes: do not enable both rebirth methods together.")
 
 local rebirthOptions = {
     "1K (Thousand)", "1M (Million)", "1B (Billion)", "1T (Trillion)", "1qd (Quadrillion)", "1Qn (Quintillion)",
@@ -482,7 +1002,7 @@ rebirthValues["inf (Infinity)"] = math.huge
 local thresholdOptions = {}
 for i = 1, 18 do thresholdOptions[i] = rebirthOptions[i] end
 
-SettingsTab:CreateDropdown({
+BoostTab:CreateDropdown({
     Name = "Layout Switch at (cash value)",
     Options = thresholdOptions,
     CurrentOption = { "1K (Thousand)" },
@@ -509,21 +1029,21 @@ local function startLayoutSwitch(key, enabled, targetLayout)
     end)
 end
 
-SettingsTab:CreateToggle({
+BoostTab:CreateToggle({
     Name = "Auto Layout Switch (1 to 2)",
     CurrentValue = false,
     Flag = "AutoLayout12",
     Callback = function(state) startLayoutSwitch("switch12", state, "Layout2") end,
 })
 
-SettingsTab:CreateToggle({
+BoostTab:CreateToggle({
     Name = "Auto Layout Switch (1 to 3)",
     CurrentValue = false,
     Flag = "AutoLayout13",
     Callback = function(state) startLayoutSwitch("switch13", state, "Layout3") end,
 })
 
-SettingsTab:CreateDropdown({
+BoostTab:CreateDropdown({
     Name = "Auto Rebirth at (only rebirth when cash is met)",
     Options = rebirthOptions,
     CurrentOption = { "1K (Thousand)" },
@@ -534,7 +1054,7 @@ SettingsTab:CreateDropdown({
     end,
 })
 
-SettingsTab:CreateToggle({
+BoostTab:CreateToggle({
     Name = "Auto Rebirth (by cash threshold)",
     CurrentValue = false,
     Flag = "AutoRebirthToggle",
@@ -578,9 +1098,10 @@ local function diagnose()
     end
 end
 
-SettingsTab:CreateButton({ Name = "Run Diagnostics", Callback = diagnose })
+BoostTab:CreateSection("Diagnostics & Compatibility")
+BoostTab:CreateButton({ Name = "Run Diagnostics", Callback = diagnose })
 
-SettingsTab:CreateButton({
+BoostTab:CreateButton({
     Name = "Dump Remotes (print to F9 console)",
     Callback = function()
         print("===== ReplicatedStorage children =====")
@@ -597,7 +1118,7 @@ SettingsTab:CreateButton({
 ----------------------------------------------------------------------
 -- FACTORY TAB
 ----------------------------------------------------------------------
-FactoryTab:CreateSection("Factory Speed Adjuster")
+FactoryTab:CreateSection("Factory Speed Control")
 
 FactoryTab:CreateSlider({
     Name = "Ore Speed Multiplier",
@@ -620,14 +1141,18 @@ connect(RunService.Heartbeat, function()
     if not Hub.Alive or not boostEnabled then return end
     local dropped = workspace:FindFirstChild("DroppedParts")
     if not dropped then return end
+    -- Apply a bounded correction instead of exponential acceleration per frame.
     for _, factory in ipairs(dropped:GetChildren()) do
         if factory.Name:match("^Factory%d+$") then
             for _, ore in ipairs(factory:GetChildren()) do
                 if ore:IsA("BasePart") then
                     local vel = ore.AssemblyLinearVelocity
-                    if vel.Magnitude > 0 then
-                        ore.AssemblyLinearVelocity = Vector3.new(
-                            vel.X * oreSpeedMultiplier, vel.Y, vel.Z * oreSpeedMultiplier)
+                    local horizontal = Vector3.new(vel.X, 0, vel.Z)
+                    local speed = horizontal.Magnitude
+                    local target = math.min(150, 20 * oreSpeedMultiplier)
+                    if speed > 0.5 and speed < target then
+                        local accelerated = horizontal.Unit * math.min(target, speed + 1.0)
+                        ore.AssemblyLinearVelocity = Vector3.new(accelerated.X, vel.Y, accelerated.Z)
                     end
                 end
             end
@@ -658,10 +1183,11 @@ FactoryTab:CreateToggle({
 
 -- Find my factory and keep AdjustSpeed locked
 task.spawn(function()
-    while not myFactory do
+    while Hub.Alive and not myFactory do
         myFactory = getPlayerFactory()
         if not myFactory then task.wait(1) end
     end
+    if not Hub.Alive or not myFactory then return end
     print("[MH] Found factory:", myFactory.Name)
     local adj = myFactory:WaitForChild("AdjustSpeed", 15)
     if not adj then warn("[MH] AdjustSpeed not found in factory"); return end
@@ -674,63 +1200,7 @@ task.spawn(function()
     end
 end)
 
-----------------------------------------------------------------------
--- NPC TELEPORT TAB (targets are resolved when you click, not at load)
-----------------------------------------------------------------------
-NPCTab:CreateSection("Teleport to NPCs & Factory")
 
-local function addTeleportButton(name, finder)
-    NPCTab:CreateButton({
-        Name = name,
-        Callback = function()
-            local ok, target = pcall(finder)
-            teleportTo(ok and target or nil)
-        end,
-    })
-end
-
-local function findInMap(npcName)
-    local map = workspace:FindFirstChild("Map")
-    return map and map:FindFirstChild(npcName, true)
-end
-
-addTeleportButton("Craftsman (Wizard Tower #557)", function()
-    local map = workspace:FindFirstChild("Map")
-    local tower = map and map:FindFirstChild("Tower")
-    local wizard = tower and tower:FindFirstChild("Wizard Tower")
-    return wizard and wizard:GetChildren()[557]
-end)
-addTeleportButton("Box Shop (SpookMcDook)", function() return findInMap("SpookMcDook") end)
-addTeleportButton("Guest666 (JohnDoe)", function() return findInMap("JohnDoe") end)
-addTeleportButton("Superstitious Craftsman (Draedon)", function() return findInMap("Draedon") end)
-
-NPCTab:CreateButton({
-    Name = "Find All NPCs in Map (print to console)",
-    Callback = function()
-        local map = workspace:FindFirstChild("Map")
-        if not map then warn("[MH] workspace.Map not found"); return end
-        local count = 0
-        for _, obj in ipairs(map:GetDescendants()) do
-            if obj:IsA("Model") or obj:IsA("BasePart") then
-                local n = obj.Name:lower()
-                if obj:FindFirstChild("Humanoid") or n:find("npc") or n:find("dude")
-                    or n:find("john") or n:find("craft") or n:find("shop") then
-                    print("• " .. obj:GetFullName())
-                    count += 1
-                end
-            end
-        end
-        print("===== Found " .. count .. " possible NPCs =====")
-    end,
-})
-
-NPCTab:CreateButton({
-    Name = "Teleport to My Factory",
-    Callback = function()
-        local f = getPlayerFactory()
-        if f then teleportTo(f) else notify("Factory", "Could not find your factory.") end
-    end,
-})
 
 ----------------------------------------------------------------------
 -- EGG ESP TAB
@@ -787,7 +1257,7 @@ local function createESP(egg)
     text.Size = UDim2.new(1, 0, 1, 0)
     text.BackgroundTransparency = 1
     text.Text = label or egg.Name
-    text.TextColor3 = Color3.fromRGB(255, 255, 0)
+    text.TextColor3 = Color3.fromRGB(187, 136, 255)
     text.TextStrokeTransparency = 0
     text.TextScaled = true
     text.Font = Enum.Font.SourceSansBold
@@ -803,6 +1273,7 @@ local function clearAllESP()
     allESPs = {}
 end
 
+EspTab:CreateSection("Egg Finder")
 EspTab:CreateToggle({
     Name = "Egg ESP",
     CurrentValue = false,
@@ -849,7 +1320,6 @@ do
         trackOres = false, trackBoxes = false,
         -- boxes
         farmBoxes = false, boxSpeed = 30, safetyTeleport = false, candyConfirm = false,
-        candyCollect = false, candyEvery = 5, candyMin = 0, candyTeleport = false,
         selectedBox = "Regular", boxWait = 1,
         -- misc
         antiLeave = false, walk = 16, jump = 50,
@@ -1684,7 +2154,7 @@ do
 
         local function tryPlace()
             local ok, placed, code = callRemote("PlaceItem", itemId, cf + base.Position, { base })
-            if ok and placed ~= false and placed ~= nil then return true end
+            if ok and placed ~= false then return true end
             return false, tostring(code or placed)
         end
 
@@ -2047,292 +2517,7 @@ do
         if not ok then warn("[MH] box farm error:", err) end
     end
 
-    ------------------------------------------------------------------
-    -- Halloween candy: collect at the furnaces and answer the Yes/No dialog.
-    -- The Yes button moves between left and right, so it is looked up by
-    -- name / text every time and never by a fixed position. The click rotates
-    -- between: game signals -> executor mouse -> VirtualInputManager mouse.
-    ------------------------------------------------------------------
-    local Candy = {}
-    do
-        local VIM = game:GetService("VirtualInputManager")
-        local GuiService = game:GetService("GuiService")
-        local UIS = game:GetService("UserInputService")
-        local CLICK_METHODS = { "signal", "mouse", "vim" }
-        local state = { lastAction = 0, tries = 0, busy = false, nextScan = 0, cache = {}, lastMethod = "-" }
 
-        local function status(text)
-            if Candy.label then pcall(function() Candy.label:Set(text) end) end
-        end
-
-        local function trimLower(s)
-            return ((s or ""):lower():gsub("%s+", ""))
-        end
-
-        -- The game's confirm dialog (same path MX6's hub reads)
-        local function findDialog()
-            local pg = LocalPlayer:FindFirstChild("PlayerGui")
-            local gui = pg and pg:FindFirstChild("GUI")
-            local holder = gui and gui:FindFirstChild("InputPrompt")
-            local prompt = holder and holder:FindFirstChild("InputPrompt")
-            if not (prompt and prompt:IsA("GuiObject") and prompt.Visible) then return nil end
-            local title = prompt:FindFirstChild("Title")
-            local text = title and title.Text or ""
-            local lower = text:lower()
-            if lower:find("collect", 1, true) and lower:find("candy", 1, true) then
-                return prompt, text
-            end
-            return nil
-        end
-
-        local function findButton(dialog, which)  -- which = "yes" or "no"
-            local direct = dialog:FindFirstChild(which == "yes" and "Yes" or "No")
-            if direct then
-                if direct:IsA("GuiButton") then return direct end
-                return direct:FindFirstChildWhichIsA("GuiButton", true) or direct
-            end
-            for _, d in ipairs(dialog:GetDescendants()) do
-                if (d:IsA("TextButton") or d:IsA("TextLabel")) and trimLower(d.Text) == which then
-                    local b = d
-                    while b and b ~= dialog and not b:IsA("GuiButton") do b = b.Parent end
-                    if b and b:IsA("GuiButton") then return b end
-                    return d
-                end
-            end
-            return nil
-        end
-
-        -- Screen position of the centre of the button right now
-        local function buttonCenter(btn)
-            if not (btn and btn:IsA("GuiObject")) then return nil end
-            local sg = btn:FindFirstAncestorOfClass("ScreenGui")
-            local inset = (sg and sg.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
-            local pos = btn.AbsolutePosition + btn.AbsoluteSize / 2
-            return Vector2.new(pos.X, pos.Y + inset.Y)
-        end
-
-        -- 1) call what the game connected to the button
-        local function pressSignals(btn)
-            local fired = false
-            local signals = { "MouseButton1Click", "Activated" }
-            if getconnections then
-                for _, name in ipairs(signals) do
-                    local okSig, signal = pcall(function() return btn[name] end)
-                    if okSig and signal then
-                        local okC, conns = pcall(getconnections, signal)
-                        if okC and conns then
-                            for _, c in ipairs(conns) do
-                                if c.Fire then
-                                    fired = pcall(c.Fire, c) or fired
-                                elseif c.Function then
-                                    fired = pcall(c.Function) or fired
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-            if not fired and firesignal then
-                for _, name in ipairs(signals) do
-                    local okSig, signal = pcall(function() return btn[name] end)
-                    if okSig and signal then fired = pcall(firesignal, signal) or fired end
-                end
-            end
-            return fired
-        end
-
-        -- 2) the executor's own mouse (the same way your old script clicked buttons)
-        local function pressExecutorMouse(btn)
-            local target = buttonCenter(btn)
-            if not target then return false end
-            local canMove = (mousemoverel ~= nil) or (mousemoveabs ~= nil)
-            local canClick = (mouse1click ~= nil) or (mouse1press ~= nil and mouse1release ~= nil)
-            if not (canMove and canClick) then return false end
-            return (pcall(function()
-                if mousemoverel then
-                    for _ = 1, 2 do  -- second pass corrects mouse acceleration
-                        local d = target - UIS:GetMouseLocation()
-                        mousemoverel(math.floor(d.X), math.floor(d.Y))
-                        task.wait(0.03)
-                    end
-                    mousemoverel(2, 2)
-                else
-                    mousemoveabs(target.X, target.Y)
-                end
-                task.wait(0.1)
-                if mouse1click then
-                    mouse1click()
-                else
-                    mouse1press()
-                    task.wait(0.1)
-                    mouse1release()
-                end
-            end))
-        end
-
-        -- 3) Roblox's virtual input
-        local function pressVirtual(btn)
-            local target = buttonCenter(btn)
-            if not target then return false end
-            return (pcall(function()
-                VIM:SendMouseMoveEvent(target.X, target.Y, game)
-                VIM:SendMouseButtonEvent(target.X, target.Y, 0, true, game, 0)
-                task.wait(0.05)
-                VIM:SendMouseButtonEvent(target.X, target.Y, 0, false, game, 0)
-            end))
-        end
-
-        function Candy.confirm()
-            local dialog, text = findDialog()
-            if not dialog then state.tries = 0; return end
-            if os.clock() - state.lastAction < 0.35 then return end
-            local raw = (text or ""):match("collect%s+([%d,%.]+)")
-            local amount = raw and tonumber((raw:gsub(",", ""))) or nil
-            local which = ((amount == nil) or amount >= B.candyMin) and "yes" or "no"
-            local btn = findButton(dialog, which)
-            if not btn then
-                status("Dialog open but the " .. which:upper() .. " button was not found")
-                return
-            end
-            state.lastAction = os.clock()
-            for _ = 1, #CLICK_METHODS do
-                local method = CLICK_METHODS[(state.tries % #CLICK_METHODS) + 1]
-                state.tries = state.tries + 1
-                local ok = (method == "signal" and pressSignals(btn))
-                    or (method == "mouse" and pressExecutorMouse(btn))
-                    or (method == "vim" and pressVirtual(btn))
-                if ok then
-                    state.lastMethod = method
-                    status(("Pressed %s with: %s"):format(which:upper(), method))
-                    break
-                end
-            end
-        end
-
-        -- Every "Collect" prompt on your base, candy-named ones first
-        local function collectPrompts()
-            if os.clock() < state.nextScan then return state.cache end
-            state.nextScan = os.clock() + 2
-            local t = getTycoon()
-            local preferred, others = {}, {}
-            if t then
-                for _, d in ipairs(t:GetDescendants()) do
-                    if d:IsA("ProximityPrompt") and d.Enabled ~= false
-                        and (d.ActionText or ""):lower():find("collect", 1, true) then
-                        local item = d
-                        while item.Parent and item.Parent ~= t do item = item.Parent end
-                        local label = ((d.ObjectText or "") .. " " .. item.Name):lower()
-                        if label:find("candy", 1, true) then
-                            preferred[#preferred + 1] = d
-                        else
-                            others[#others + 1] = d
-                        end
-                    end
-                end
-            end
-            state.cache = (#preferred > 0) and preferred or others
-            return state.cache
-        end
-
-        local function promptPart(p)
-            local parent = p.Parent
-            if parent and parent:IsA("BasePart") then return parent end
-            if parent and parent:IsA("Attachment") then return parent.Parent end
-            return parent and parent:FindFirstChildWhichIsA("BasePart", true)
-        end
-
-        local function trigger(p, method)
-            if method == "fire" then
-                if fireproximityprompt then pcall(fireproximityprompt, p) end
-            else
-                pcall(function() p:InputHoldBegin() end)
-                local hold = tonumber(p.HoldDuration) or 0
-                if hold > 0 then task.wait(hold + 0.05) end
-                pcall(function() p:InputHoldEnd() end)
-            end
-        end
-
-        -- returns: answered (dialog appeared and then closed), appeared
-        local function waitDialog(timeout, active)
-            local t0, seen = os.clock(), false
-            while os.clock() - t0 < timeout and Hub.Alive and active() do
-                task.wait(0.1)
-                Candy.confirm()
-                if findDialog() then seen = true elseif seen then return true, true end
-            end
-            return false, seen
-        end
-
-        function Candy.collect(force)
-            if state.busy or B.rebirthing or B.layoutLoading then return end
-            local function active() return force or B.candyCollect end
-            state.busy = true
-            local ok, err = pcall(function()
-                local prompts = collectPrompts()
-                if #prompts == 0 then status("No Collect prompt found on your base"); return end
-                local hrp = getHRP()
-                local origin = hrp and hrp.CFrame
-                local answered, stuck = 0, 0
-                for _, p in ipairs(prompts) do
-                    if not (Hub.Alive and active()) then break end
-                    if p.Parent and p.Enabled ~= false then
-                        if B.candyTeleport and hrp then
-                            local part = promptPart(p)
-                            if part then hrp.CFrame = part.CFrame + Vector3.new(0, 4, 0); task.wait(0.2) end
-                        end
-                        local methods = fireproximityprompt and { "fire", "hold" } or { "hold" }
-                        for _, method in ipairs(methods) do
-                            trigger(p, method)
-                            local done, appeared = waitDialog(4, active)
-                            if done then answered = answered + 1; break end
-                            if appeared then stuck = stuck + 1; break end  -- dialog opened but never closed
-                        end
-                    end
-                end
-                if B.candyTeleport and hrp and origin then hrp.CFrame = origin end
-                status(("Last run: %d answered, %d stuck, %d prompt(s). Last click: %s"):format(
-                    answered, stuck, #prompts, state.lastMethod))
-            end)
-            state.busy = false
-            if not ok then
-                warn("[MH] candy collect error:", err)
-                status("Error: " .. tostring(err):sub(1, 60))
-            end
-        end
-
-        function Candy.debug()
-            local lines = {}
-            local dialog, text = findDialog()
-            lines[#lines + 1] = "Dialog open: " .. tostring(dialog ~= nil) .. (text and (" | text: " .. text) or "")
-            if dialog then
-                for _, which in ipairs({ "yes", "no" }) do
-                    local b = findButton(dialog, which)
-                    if b and b:IsA("GuiObject") then
-                        lines[#lines + 1] = ("%s -> %s %s | centre %s | size %s | visible %s | active %s"):format(
-                            which, b.ClassName, b:GetFullName(), tostring(buttonCenter(b)),
-                            tostring(b.AbsoluteSize), tostring(b.Visible), tostring(b.Active))
-                    else
-                        lines[#lines + 1] = which .. " -> NOT FOUND"
-                    end
-                end
-            end
-            lines[#lines + 1] = ("Executor: getconnections=%s firesignal=%s fireproximityprompt=%s"):format(
-                tostring(getconnections ~= nil), tostring(firesignal ~= nil), tostring(fireproximityprompt ~= nil))
-            lines[#lines + 1] = ("Mouse: mousemoverel=%s mousemoveabs=%s mouse1click=%s mouse1press=%s mouse1release=%s"):format(
-                tostring(mousemoverel ~= nil), tostring(mousemoveabs ~= nil), tostring(mouse1click ~= nil),
-                tostring(mouse1press ~= nil), tostring(mouse1release ~= nil))
-            lines[#lines + 1] = "Last click method: " .. state.lastMethod
-            state.nextScan = 0
-            local prompts = collectPrompts()
-            lines[#lines + 1] = "Collect prompts on base: " .. #prompts
-            for _, p in ipairs(prompts) do
-                lines[#lines + 1] = ("%s | action '%s' | object '%s' | hold %s | distance %s"):format(
-                    p:GetFullName(), tostring(p.ActionText), tostring(p.ObjectText),
-                    tostring(p.HoldDuration), tostring(p.MaxActivationDistance))
-            end
-            showText(table.concat(lines, "\n"))
-        end
-    end
 
     ------------------------------------------------------------------
     -- Menus (vendors) + blueprints
@@ -2407,8 +2592,7 @@ do
     ------------------------------------------------------------------
     table.insert(Hub.Cleanups, function()
         B.autoRebirth, B.oreBoost, B.oreBoostActive, B.farmRP = false, false, false, false
-        B.farmBoxes, B.autoPrompts, B.candyConfirm, B.antiLeave = false, false, false, false
-        B.candyCollect = false
+        B.farmBoxes, B.autoPrompts, B.antiLeave = false, false, false
         B.trackOres, B.trackBoxes = false, false
         clearOreTags()
         clearBoxTags()
@@ -2418,7 +2602,7 @@ do
     -- BOOST TAB
     ------------------------------------------------------------------
     do
-    BoostTab:CreateSection("Auto Rebirth")
+    BoostTab:CreateSection("Smart Auto Rebirth · MX6 / Viyx")
     boostStatus = BoostTab:CreateLabel("Status: idle")
 
     rebirthToggle = BoostTab:CreateToggle({
@@ -2556,7 +2740,7 @@ do
         end,
     })
 
-    BoostTab:CreateSection("Ore Boost (ores teleport through your upgraders)")
+    BoostTab:CreateSection("Ore Boost & Furnace Automation")
     oreBoostToggle = BoostTab:CreateToggle({
         Name = "Ore Boost",
         CurrentValue = false,
@@ -2674,7 +2858,7 @@ do
         PlaceholderText = "1e250",
         RemoveTextAfterFocusLost = false,
         Flag = "VxOreCap",
-        Callback = function(text) B.oreCap = math.min(1e290, tonumber(text) or 1e250) end,
+        Callback = function(text) B.oreCap = math.clamp(tonumber(text) or 1e250, 1e9, 1e290) end,
     })
     BoostTab:CreateToggle({
         Name = "Farm RP (sell every ore, turns off Ore Boost + Auto Rebirth)",
@@ -2774,7 +2958,8 @@ do
         end,
     })
 
-    BoostTab:CreateSection("Debug")
+    BoostTab:CreateSection("Debug & Credits")
+    BoostTab:CreateLabel("Viyx 1.5 | Source functionality: Viyx, MX6 & A4. This is not an official game tool.")
     BoostTab:CreateButton({
         Name = "Scan my factory (shows copyable text)",
         Callback = function()
@@ -2807,7 +2992,7 @@ do
     -- BOX FARMING TAB
     ------------------------------------------------------------------
     do
-    local BoxTab = Window:CreateTab("Box Farming")
+    -- Box Farming tab is pre-created above for navigation order
     BoxTab:CreateSection("Farming")
     BoxTab:CreateToggle({
         Name = "Farm boxes (teleports to every dropped box)",
@@ -2837,15 +3022,8 @@ do
         Name = "Collect boxes once",
         Callback = function() task.spawn(collectBoxes, true) end,
     })
-    BoxTab:CreateToggle({
-        Name = "Auto confirm candy collection (Yes)",
-        CurrentValue = false,
-        Flag = "VxCandy",
-        Callback = function(state)
-            B.candyConfirm = state
-            setLoop("vxCandy", state, 0.1, Candy.confirm)
-        end,
-    })
+
+
     BoxTab:CreateToggle({
         Name = "Track dropped boxes (max 25)",
         CurrentValue = false,
@@ -2930,74 +3108,13 @@ do
 
     end
 
-    ------------------------------------------------------------------
-    -- HALLOWEEN TAB
-    ------------------------------------------------------------------
-    do
-        local HalloweenTab = Window:CreateTab("Halloween")
-        HalloweenTab:CreateSection("Candy furnaces")
-        Candy.label = HalloweenTab:CreateLabel("Status: idle")
 
-        local lastRun = 0
-        HalloweenTab:CreateToggle({
-            Name = "Auto collect candy at furnaces",
-            CurrentValue = false,
-            Flag = "VxCandyCollect",
-            Callback = function(state)
-                B.candyCollect = state
-                lastRun = 0
-                setLoop("vxCandyCollect", state, 0.5, function()
-                    if os.clock() - lastRun >= B.candyEvery then
-                        lastRun = os.clock()
-                        Candy.collect(false)
-                    end
-                end)
-                setLoop("vxCandyHalloween", state, 0.1, Candy.confirm)
-                if not state then pcall(function() Candy.label:Set("Status: stopped") end) end
-            end,
-        })
-        HalloweenTab:CreateInput({
-            Name = "Collect every N seconds",
-            CurrentValue = "5",
-            PlaceholderText = "5",
-            RemoveTextAfterFocusLost = false,
-            Flag = "VxCandyEvery",
-            Callback = function(text) B.candyEvery = math.max(1, tonumber(text) or 5) end,
-        })
-        HalloweenTab:CreateInput({
-            Name = "Minimum candy to collect (0 = always)",
-            CurrentValue = "0",
-            PlaceholderText = "0",
-            RemoveTextAfterFocusLost = false,
-            Flag = "VxCandyMin",
-            Callback = function(text) B.candyMin = math.max(0, tonumber(text) or 0) end,
-        })
-        HalloweenTab:CreateToggle({
-            Name = "Teleport to the furnace first, then come back",
-            CurrentValue = false,
-            Flag = "VxCandyTeleport",
-            Callback = function(state) B.candyTeleport = state end,
-        })
-        HalloweenTab:CreateButton({
-            Name = "Collect candy now",
-            Callback = function() task.spawn(Candy.collect, true) end,
-        })
-        HalloweenTab:CreateLabel("If nothing is collected from far away, turn on the teleport option.")
-        HalloweenTab:CreateButton({
-            Name = "Test: answer the dialog that is open now",
-            Callback = function() Candy.confirm() end,
-        })
-        HalloweenTab:CreateButton({
-            Name = "Debug candy (shows copyable text)",
-            Callback = Candy.debug,
-        })
-    end
 
     ------------------------------------------------------------------
     -- VENDORS TAB
     ------------------------------------------------------------------
     do
-    local VendorTab = Window:CreateTab("Vendors")
+    -- Vendors tab is pre-created above for navigation order
     VendorTab:CreateSection("Open menus")
     local MENUS = {
         { "Craftsman", "Craftsman" }, { "Masked Man", "MaskedMan" }, { "Box man", "SpookMcDook" },
@@ -3011,6 +3128,40 @@ do
         })
     end
 
+    VendorTab:CreateSection("Shop Actions · MX6 Reference")
+    VendorTab:CreateLabel("Shop Spam buys game-cash shop items. Two clicks within 8 seconds are required; it is never automatic on launch.")
+    local shopConfirmUntil = 0
+    local shopBusy = false
+    VendorTab:CreateButton({
+        Name = "Shop Spam (click twice to confirm)",
+        Callback = function()
+            if os.clock() > shopConfirmUntil then
+                shopConfirmUntil = os.clock() + 8
+                notify("Shop Spam", "This spends in-game cash. Click again within 8 seconds to confirm.", 7)
+                return
+            end
+            shopConfirmUntil = 0
+            if shopBusy then return end
+            shopBusy = true
+            task.spawn(function()
+                local items, count = RS:FindFirstChild("Items"), 0
+                if items then
+                    for _, item in ipairs(items:GetChildren()) do
+                        if not Hub.Alive or count >= 60 then break end
+                        local itemType = item:FindFirstChild("ItemType")
+                        local id = getItemId(item)
+                        if id and itemType and itemType.Value >= 1 and itemType.Value < 5 then
+                            callRemote("BuyItem", id, 1)
+                            count = count + 1
+                            task.wait(0.12)
+                        end
+                    end
+                end
+                shopBusy = false
+                notify("Shop Spam", ("Sent %d purchase request(s)."):format(count))
+            end)
+        end,
+    })
     VendorTab:CreateSection("Craftsman blueprints (uses RP)")
     local bpLabel = VendorTab:CreateLabel("Press refresh to count your missing blueprints.")
     local function refreshBlueprints()
@@ -3047,7 +3198,7 @@ do
     -- TELEPORT TAB
     ------------------------------------------------------------------
     do
-    local TeleportTab = Window:CreateTab("Teleport")
+    -- Teleport tab is pre-created above for navigation order
     TeleportTab:CreateSection("Player base")
     local selectedPlayer = LocalPlayer.Name
     local function playerNames()
@@ -3126,7 +3277,7 @@ do
     -- MUSIC TAB
     ------------------------------------------------------------------
     do
-    local MusicTab = Window:CreateTab("Music")
+    -- Music tab is pre-created above for navigation order
     MusicTab:CreateSection("Seasonal music (only you hear it)")
     local selectedPreset = "Halloween Day"
     MusicTab:CreateDropdown({
@@ -3206,7 +3357,7 @@ do
     -- MISC TAB
     ------------------------------------------------------------------
     do
-    local MiscTab = Window:CreateTab("Misc")
+    -- Misc tab is pre-created above for navigation order
     MiscTab:CreateSection("Character")
 
     local function currentHumanoid()
@@ -3286,6 +3437,7 @@ end
 function Hub.Unload()
     Hub.Alive = false
     for key in pairs(loops) do loops[key] = (loops[key] or 0) + 1 end
+    clearAllESP()
     for _, fn in ipairs(Hub.Cleanups) do pcall(fn) end
     for _, conn in ipairs(Hub.Conns) do pcall(function() conn:Disconnect() end) end
     pcall(function() Rayfield:Destroy() end)
@@ -3302,5 +3454,6 @@ end
 -- Finish
 ----------------------------------------------------------------------
 pcall(function() Rayfield:LoadConfiguration() end)
-task.delay(3, diagnose)  -- auto-report anything missing
-print("[MH] Script loaded.")
+-- Diagnostics available manually under Auto Section.
+notify("Viyx 1.5", "Dashboard loaded. Press K to show or hide the hub.", 5)
+print("[Viyx MH 1.5] Loaded. Original Viyx + MX6/A4 features integrated.")
